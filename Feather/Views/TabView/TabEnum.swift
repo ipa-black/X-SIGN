@@ -16,8 +16,8 @@ enum TabEnum: String, CaseIterable, Hashable {
 	
 	var title: String {
 		switch self {
-		case .sources:     	return .localized("Sources")
-		case .library: 		return .localized("Library")
+		case .sources:     	return "التطبيقات"
+		case .library: 		return "التوقيع"
 		case .settings: 	return .localized("Settings")
 		case .certificates:	return .localized("Certificates")
 		}
@@ -25,8 +25,8 @@ enum TabEnum: String, CaseIterable, Hashable {
 	
 	var icon: String {
 		switch self {
-		case .sources: 		return "globe.desk"
-		case .library: 		return "square.grid.2x2"
+		case .sources: 		return "app.badge" // أو "square.stack.3d.up.fill" (أيقونة مشابهة لمتجر التطبيقات)
+		case .library: 		return "signature" // أيقونة التوقيع
 		case .settings: 	return "gearshape.2"
 		case .certificates: return "person.text.rectangle"
 		}
