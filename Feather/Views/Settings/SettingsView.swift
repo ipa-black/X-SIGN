@@ -36,7 +36,15 @@ struct SettingsView: View {
 	var body: some View {
 		NBNavigationView(.localized("Settings")) {
 			Form {
-				_feedback()
+				Section {
+					NavigationLink(destination: AboutView()) {
+						Label {
+							Text(verbatim: .localized("About %@", arguments: Bundle.main.name))
+						} icon: {
+							FRAppIconView(size: 23)
+						}
+					}
+				}
                 
 				Section {
 					NavigationLink(destination: AppearanceView()) {
@@ -79,22 +87,6 @@ struct SettingsView: View {
 					}
 				} footer: {
 					Text(.localized("Reset the applications sources, certificates, apps, and general contents."))
-				}
-			}
-		}
-	}
-}
-
-// MARK: - View extension
-extension SettingsView {
-	@ViewBuilder
-	private func _feedback() -> some View {
-		Section {
-			NavigationLink(destination: AboutView()) {
-				Label {
-					Text(verbatim: .localized("About %@", arguments: Bundle.main.name))
-				} icon: {
-					FRAppIconView(size: 23)
 				}
 			}
 		}
