@@ -9,25 +9,31 @@ import SwiftUI
 import NimbleViews
 
 enum TabEnum: String, CaseIterable, Hashable {
+	case today
 	case sources
 	case library
+	case search
 	case settings
 	case certificates
 	
 	var title: String {
 		switch self {
-		case .sources:     	return .localized("Sources")
-		case .library: 		return .localized("Library")
-		case .settings: 	return .localized("Settings")
-		case .certificates:	return .localized("Certificates")
+		case .today:        return "اليوم"
+		case .sources:     	return "التطبيقات"
+		case .library: 		return "التوقيع"
+		case .search:       return "البحث"
+		case .settings: 	return "الإعدادات"
+		case .certificates:	return "الشهادات"
 		}
 	}
 	
 	var icon: String {
 		switch self {
-		case .sources: 		return "globe.desk"
-		case .library: 		return "square.grid.2x2"
-		case .settings: 	return "gearshape.2"
+		case .today:        return "doc.text.image.fill"
+		case .sources: 		return "square.stack.3d.up.fill"
+		case .library: 		return "checkmark.seal.fill"
+		case .search:       return "magnifyingglass"
+		case .settings: 	return "gearshape.2.fill"
 		case .certificates: return "person.text.rectangle"
 		}
 	}
@@ -35,17 +41,21 @@ enum TabEnum: String, CaseIterable, Hashable {
 	@ViewBuilder
 	static func view(for tab: TabEnum) -> some View {
 		switch tab {
-		case .sources: SourcesView()
-		case .library: LibraryView()
-		case .settings: SettingsView()
+		case .today:        AppStoreTodayView()
+		case .sources:      SourcesView()
+		case .library:      LibraryView()
+		case .search:       AppStoreSearchView()
+		case .settings:     SettingsView()
 		case .certificates: NBNavigationView(.localized("Certificates")) { CertificatesView() }
 		}
 	}
 	
 	static var defaultTabs: [TabEnum] {
 		return [
+			.today,
 			.sources,
 			.library,
+			.search,
 			.settings
 		]
 	}
