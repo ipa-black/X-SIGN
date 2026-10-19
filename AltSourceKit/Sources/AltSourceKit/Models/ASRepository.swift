@@ -118,23 +118,6 @@ public struct ASRepository: Sendable, Decodable, Hashable, Identifiable {
 	public var currentIconURL: URL? {
 		iconURL ?? apps.first?.iconURL
 	}
-
-	//	func encode(to encoder: any Encoder) throws {
-	//		var container = encoder.container(keyedBy: CodingKeys.self)
-	//		try container.encode(id, forKey: .id)
-	//		try container.encode(name, forKey: .name)
-	//
-	//		try container.encodeIfPresent(subtitle, forKey: .subtitle)
-	//		try container.encodeIfPresent(description, forKey: .description)
-	//		try container.encodeIfPresent(website, forKey: .website)
-	//
-	//		try container.encodeIfPresent(patreonURL, forKey: .patreonURL)
-	//		try container.encodeIfPresent(userInfo, forKey: .userInfo)
-	//
-	//		try container.encodeIfPresent(apps, forKey: .apps)
-	//		try container.encodeIfPresent(featuredApps, forKey: .featuredApps)
-	//		try container.encodeIfPresent(news, forKey: .news)
-	//	}
 }
 
 // MARK: - App
@@ -189,17 +172,59 @@ extension ASRepository {
 			public var iPhone: [URL]?
 			public var iPad: [URL]?
 
+			private struct FlexibleItem: Decodable {
+				let url: URL?
+
+				private enum ItemKeys: String, CodingKey {
+					case url
+				}
+
+				init(from decoder: any Decoder) throws {
+					if let single = try? decoder.singleValueContainer() {
+						if let directURL = try? single.decode(URL.self) {
+							self.url = directURL
+							return
+						}
+						if let urlString = try? single.decode(String.self),
+						   let parsedURL = URL(string: urlString) {
+							self.url = parsedURL
+							return
+						}
+					}
+					if let container = try? decoder.container(keyedBy: ItemKeys.self) {
+						if let directURL = try? container.decode(URL.self, forKey: .url) {
+							self.url = directURL
+							return
+						}
+						if let urlString = try? container.decode(String.self, forKey: .url),
+						   let parsedURL = URL(string: urlString) {
+							self.url = parsedURL
+							return
+						}
+					}
+					self.url = nil
+				}
+			}
+
 			public init(from decoder: any Decoder) throws {
-				// theres a bunch of ways this shit can be formatted
-				// 1. an array of urls (strings)
-				// 2. an array of dictionaries that contain url, width, height.
-				// 3. a mix of 1 and 2, having urls or dictionaries
-				// 4. a dictionary with properties for iphone and ipad, which are arrays of above types
+				// Cases 1, 2, 3: Array of URLs, objects, or a mix of both
+				if let items = try? [FlexibleItem](from: decoder) {
+					self.iPhone = items.compactMap(\.url)
+					self.iPad = []
+					return
+				}
 
-				#warning("implement screenshots decoding")
+				// Case 4: Dictionary with iphone / ipad arrays
+				if let container = try? decoder.container(keyedBy: CodingKeys.self) {
+					let iphoneItems = (try? container.decodeIfPresent([FlexibleItem].self, forKey: .iPhone)) ?? []
+					let ipadItems = (try? container.decodeIfPresent([FlexibleItem].self, forKey: .iPad)) ?? []
+					self.iPhone = iphoneItems.compactMap(\.url)
+					self.iPad = ipadItems.compactMap(\.url)
+					return
+				}
 
-				self.iPad = []
 				self.iPhone = []
+				self.iPad = []
 			}
 
 			public enum CodingKeys: String, CodingKey {
@@ -258,7 +283,7 @@ extension ASRepository {
 					forKey: .localizedDescription
 				)
 
-			self.iconURL = try container.decode(URL.self, forKey: .iconURL)
+			self.iconURL = try? container.decodeIfPresent(URL.self, forKey: .iconURL)
 
 			self.tintColor =
 				try container.decodeIfPresent(Color.self, forKey: .tintColor)
@@ -285,13 +310,17 @@ extension ASRepository {
 				forKey: .appPermissions
 			)
 
-			self.screenshots = try container.decodeIfPresent(
+			self.screenshots = try? container.decodeIfPresent(
 				Screenshots.self,
 				forKey: .screenshots
 			)
 
-			self.screenshotURLs =
-				try container.decodeIfPresent([URL].self, forKey: .screenshotURLs)
+			let decodedScreenshotURLs = try? container.decodeIfPresent([URL].self, forKey: .screenshotURLs)
+			if let decodedScreenshotURLs, !decodedScreenshotURLs.isEmpty {
+				self.screenshotURLs = decodedScreenshotURLs
+			} else {
+				self.screenshotURLs = self.screenshots?.iPhone
+			}
 			
 			if
 				let marketplaceID = try container.decodeIfPresent(String.self, forKey: .marketplaceID),
@@ -303,45 +332,6 @@ extension ASRepository {
 				)
 			}
 		}
-
-		//		func encode(to encoder: any Encoder) throws {
-		//			var container = encoder.container(keyedBy: CodingKeys.self)
-		//			try container.encode(id, forKey: .id)
-		//			try container.encode(name, forKey: .name)
-		//
-		//			try container.encodeIfPresent(subtitle, forKey: .subtitle)
-		//			try container.encodeIfPresent(description, forKey: .description)
-		//
-		//			try container.encode(developer, forKey: .developer)
-		//
-		//			try container.encode(versions, forKey: .versions)
-		//
-		//			try container.encode(version, forKey: .version)
-		//
-		//			try container.encode(versionDate, forKey: .versionDate)
-		//
-		//			try container.encodeIfPresent(versionDescription, forKey: .versionDescription)
-		//
-		//			try container.encode(downloadURL, forKey: .downloadURL)
-		//
-		//			try container.encode(localizedDescription, forKey: .localizedDescription)
-		//
-		//			try container.encode(iconURL, forKey: .iconURL)
-		//
-		//			try container.encodeIfPresent(tintColor, forKey: .tintColor)
-		//
-		//			if let size = size {
-		//				try container.encode(size, forKey: .size)
-		//			}
-		//
-		//			try container.encode(category, forKey: .category)
-		//			try container.encode(beta, forKey: .beta)
-		//
-		//			// try container.encode(permissions, forKey: .permissions)
-		//			// try container.encode(appPermissions, forKey: .appPermissions)
-		//
-		//			try container.encode(screenshots, forKey: .screenshots)
-		//		}
 
 		public enum CodingKeys: String, CodingKey {
 			case id = "bundleIdentifier"
