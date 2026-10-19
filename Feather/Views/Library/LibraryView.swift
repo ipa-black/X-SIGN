@@ -19,7 +19,7 @@ struct LibraryView: View {
 	@State private var _selectedInstallAppPresenting: AnyApp?
 	@State private var _isImportingPresenting = false
 	@State private var _isDownloadingPresenting = false
-	@State private var _alertDownloadString: String = "" // for _isDownloadingPresenting
+	@State private var _alertDownloadString: String = ""
 	@State private var _updateCheckRotation = 0.0
 	@State private var _isUpdateCheckCompleteVisible = false
 	
@@ -30,10 +30,8 @@ struct LibraryView: View {
 	@State private var _searchText = ""
 	@State private var _selectedScope: Scope = .all
 	
-	
 	@Namespace private var _namespace
 	
-	// horror
 	private func filteredAndSortedApps<T>(from apps: FetchedResults<T>) -> [T] where T: NSManagedObject {
 		apps.filter {
 			_searchText.isEmpty ||
@@ -70,14 +68,68 @@ struct LibraryView: View {
 	
 	// MARK: Body
 	var body: some View {
-		NBNavigationView(.localized("Library")) {
+		NBNavigationView("التوقيع والمكتبة") {
 			NBListAdaptable {
+				// App Store Style Top Dashboard Section
+				Section {
+					VStack(spacing: 14) {
+						HStack(spacing: 12) {
+							_statCard(
+								title: "تطبيقات موقعة",
+								count: _signedApps.count,
+								icon: "checkmark.seal.fill",
+								color: .green
+							)
+							_statCard(
+								title: "ملفات مستوردة",
+								count: _importedApps.count,
+								icon: "arrow.down.doc.fill",
+								color: .blue
+							)
+						}
+						
+						HStack(spacing: 10) {
+							Button {
+								_isImportingPresenting = true
+							} label: {
+								Label("استيراد ملف IPA", systemImage: "folder.fill.badge.plus")
+									.font(.subheadline.weight(.bold))
+									.foregroundStyle(.white)
+									.frame(maxWidth: .infinity)
+									.padding(.vertical, 11)
+									.background(Color.accentColor, in: Capsule())
+							}
+							.buttonStyle(.plain)
+							
+							Button {
+								_isDownloadingPresenting = true
+							} label: {
+								Label("من رابط مباشر", systemImage: "link.badge.plus")
+									.font(.subheadline.weight(.bold))
+									.foregroundStyle(Color.accentColor)
+									.frame(maxWidth: .infinity)
+									.padding(.vertical, 11)
+									.background(Color.accentColor.opacity(0.14), in: Capsule())
+							}
+							.buttonStyle(.plain)
+						}
+						
+						Picker("تصفية المكتبة", selection: $_selectedScope) {
+							ForEach(Scope.allCases, id: \.displayName) { scope in
+								Text(scope.displayName).tag(scope)
+							}
+						}
+						.pickerStyle(.segmented)
+					}
+					.padding(.vertical, 4)
+				}
+				
 				if
 					!_filteredSignedApps.isEmpty,
 					_selectedScope == .all || _selectedScope == .signed
 				{
 					NBSection(
-						.localized("Signed"),
+						"التطبيقات الموقعة",
 						secondary: _filteredSignedApps.count.description
 					) {
 						ForEach(_filteredSignedApps, id: \.uuid) { app in
@@ -98,7 +150,7 @@ struct LibraryView: View {
 					_selectedScope == .all || _selectedScope == .imported
 				{
 					NBSection(
-						.localized("Imported"),
+						"جاهزة للتوقيع (المستوردة)",
 						secondary: _filteredImportedApps.count.description
 					) {
 						ForEach(_filteredImportedApps, id: \.uuid) { app in
@@ -114,12 +166,7 @@ struct LibraryView: View {
 					}
 				}
 			}
-			.searchable(text: $_searchText, placement: .platform())
-			.compatSearchScopes($_selectedScope) {
-				ForEach(Scope.allCases, id: \.displayName) { scope in
-					Text(scope.displayName).tag(scope)
-				}
-			}
+			.searchable(text: $_searchText, placement: .platform(), prompt: "ابحث في التطبيقات الموقعة والمستوردة")
 			.scrollDismissesKeyboard(.interactively)
 			.overlay {
 				if
@@ -128,14 +175,14 @@ struct LibraryView: View {
 				{
 					if #available(iOS 17, *) {
 						ContentUnavailableView {
-							Label(.localized("No Apps"), systemImage: "questionmark.app.fill")
+							Label("المكتبة فارغة", systemImage: "checkmark.seal.fill")
 						} description: {
-							Text(.localized("Get started by importing your first IPA file."))
+							Text("قم باستيراد ملف IPA من جهازك أو حمّل تطبيقاً من قسم اليوم والتطبيقات لتوقيعه وتثبيته.")
 						} actions: {
 							Menu {
 								_importActions()
 							} label: {
-								NBButton(.localized("Import"), style: .text)
+								NBButton("استيراد تطبيق", style: .text)
 							}
 						}
 					}
@@ -198,7 +245,7 @@ struct LibraryView: View {
 			}
 			.sheet(isPresented: $_isImportingPresenting) {
 				FileImporterRepresentableView(
-					allowedContentTypes:  [.ipa, .tipa],
+					allowedContentTypes: [.ipa, .tipa],
 					allowsMultipleSelection: true,
 					onDocumentsPicked: { urls in
 						guard !urls.isEmpty else { return }
@@ -239,6 +286,33 @@ struct LibraryView: View {
 			}
 		}
 	}
+	
+	@ViewBuilder
+	private func _statCard(title: String, count: Int, icon: String, color: Color) -> some View {
+		HStack(spacing: 10) {
+			Image(systemName: icon)
+				.font(.title2)
+				.foregroundStyle(color)
+				.frame(width: 40, height: 40)
+				.background(color.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+			
+			VStack(alignment: .leading, spacing: 2) {
+				Text("\(count)")
+					.font(.title3.weight(.bold))
+					.foregroundStyle(.primary)
+				Text(title)
+					.font(.caption)
+					.foregroundStyle(.secondary)
+					.lineLimit(1)
+			}
+			Spacer(minLength: 0)
+		}
+		.padding(10)
+		.background(
+			RoundedRectangle(cornerRadius: 14, style: .continuous)
+				.fill(Color(.tertiarySystemGroupedBackground))
+		)
+	}
 }
 
 // MARK: - Extension: View
@@ -267,8 +341,6 @@ extension LibraryView {
 		}
 		
 		_selectedAppUUIDs.removeAll()
-		
-		// _editMode = .inactive
 	}
 	
 	private func _getAllApps() -> [AppInfoPresentable] {
@@ -325,9 +397,9 @@ extension LibraryView {
 		
 		var displayName: String {
 			switch self {
-			case .all: return .localized("All")
-			case .signed: return .localized("Signed")
-			case .imported: return .localized("Imported")
+			case .all: return "الكل"
+			case .signed: return "الموقعة"
+			case .imported: return "المستوردة"
 			}
 		}
 	}
