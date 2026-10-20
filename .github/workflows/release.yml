@@ -1,77 +1,67 @@
-name: Beta Build
+name: Build X-SIGN
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+    tags:
+      - v*
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Build Beta
     runs-on: macos-26
-
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
+          submodules: 'recursive'
+
+      - name: Select Xcode
+        run: |
+          if [ -d "/Applications/Xcode_26.3.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.3.0.app
+          fi
+          xcodebuild -version
+
+      - name: Resolve Swift Packages Safely
+        run: |
+          rm -rf ~/Library/Caches/org.swift.swiftpm
+          xcodebuild -resolvePackageDependencies \
+            -project Feather.xcodeproj \
+            -scheme Feather \
+            -skipPackagePluginValidation
 
       - name: Build
         run: |
+          agvtool new-version -all $(git rev-parse HEAD)
           make
 
-      - name: Update Beta Release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Get Version
+        id: get_version
         run: |
-          LATEST_OFFICIAL_TAG=$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || echo "")
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          echo "## Commit: \`$COMMIT_MSG\` (${{ github.sha }})" >> release_notes.md
-          echo "### New in this build (Compared to $LATEST_OFFICIAL_TAG):" >> release_notes.md
-            
-          CHANGES=$(git log --pretty=format:"* %s (%h)" ${LATEST_OFFICIAL_TAG}..HEAD)
-            
-          if [ -z "$CHANGES" ]; then
-            echo "* No code changes since $LATEST_OFFICIAL_TAG" >> release_notes.md
-          else
-            echo "$CHANGES" >> release_notes.md
-          fi
-          
-          echo "### Commit SHA: ${{ github.sha }}" >> release_notes.md
-          
-          cat release_notes.md
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" _build/Payload/*.app/Info.plist)
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
-          gh release delete beta --cleanup-tag -y || true
-          
-          gh release create beta "packages/Ksign.ipa" \
-            --title "Latest Beta Build" \
-            --notes "$(cat release_notes.md)" \
-            --prerelease \
-            --target ${{ github.sha }}
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: X-SIGN-v${{ env.VERSION }}
+          path: packages/*
+          if-no-files-found: error
 
-      - name: Notify Discord
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: X-SIGN v${{ env.VERSION }}
+          tag_name: v${{ env.VERSION }}-${{ github.run_number }}
+          files: |
+            packages/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          draft: false
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          
-          REPO="${{ github.repository }}"
-          TAG="beta"
-          FILENAME="Ksign.ipa"
-          
-          DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$FILENAME"
-          RELEASE_URL="https://github.com/$REPO/releases/tag/$TAG"
-          
-          echo "Sending link to Discord..."
-          
-          jq -n \
-            --arg commit_msg "$COMMIT_MSG" \
-            --arg download_url "$DOWNLOAD_URL" \
-            --arg release_url "$RELEASE_URL" \
-            '{content: "**New Beta Released!**\n\nChanges: `\($commit_msg)`\n\n[**Download IPA**](\($download_url))\n[View Release](\($release_url))"}' > discord_payload.json
-
-          curl -v \
-            -H "Content-Type: application/json" \
-            -d @discord_payload.json \
-            "$DISCORD_WEBHOOK"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
