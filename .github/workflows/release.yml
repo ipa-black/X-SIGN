@@ -2,9 +2,14 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - v*
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -20,7 +25,7 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.3.0.app
 
       - name: Build
-        run: | 
+        run: |
           agvtool new-version -all $(git rev-parse HEAD)
           make
 
@@ -30,16 +35,23 @@ jobs:
           VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" _build/Payload/*.app/Info.plist)
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: X-SIGN-v${{ env.VERSION }}
+          path: packages/*
+          if-no-files-found: error
+
       - name: Create Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v3.0.2
         with:
-          name: Feather v${{ env.VERSION }}
-          tag_name: v${{ env.VERSION }}
+          name: X-SIGN v${{ env.VERSION }}
+          tag_name: v${{ env.VERSION }}-${{ github.run_number }}
           files: |
             packages/*
           generate_release_notes: true
           fail_on_unmatched_files: true
-          draft: true
+          draft: false
         env:
-          GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
