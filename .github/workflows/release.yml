@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+          fetch-depth: 0
 
       - name: Select Xcode
         run: |
@@ -26,14 +27,6 @@ jobs:
             sudo xcode-select -s /Applications/Xcode_26.3.0.app
           fi
           xcodebuild -version
-
-      - name: Resolve Swift Packages Safely
-        run: |
-          rm -rf ~/Library/Caches/org.swift.swiftpm
-          xcodebuild -resolvePackageDependencies \
-            -project Feather.xcodeproj \
-            -scheme Feather \
-            -skipPackagePluginValidation
 
       - name: Build
         run: |
