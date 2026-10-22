@@ -10,6 +10,7 @@ import NimbleViews
 
 enum TabEnum: String, CaseIterable, Hashable {
 	case today
+	case games
 	case sources
 	case library
 	case search
@@ -19,9 +20,10 @@ enum TabEnum: String, CaseIterable, Hashable {
 	var title: String {
 		switch self {
 		case .today:        return "اليوم"
+		case .games:        return "الألعاب"
 		case .sources:     	return "التطبيقات"
 		case .library: 		return "التوقيع"
-		case .search:       return "البحث"
+		case .search:       return "بحث"
 		case .settings: 	return "الإعدادات"
 		case .certificates:	return "الشهادات"
 		}
@@ -29,11 +31,12 @@ enum TabEnum: String, CaseIterable, Hashable {
 	
 	var icon: String {
 		switch self {
-		case .today:        return "doc.text.image.fill"
+		case .today:        return "doc.text.image"
+		case .games:        return "flame.fill"
 		case .sources: 		return "square.stack.3d.up.fill"
 		case .library: 		return "checkmark.seal.fill"
 		case .search:       return "magnifyingglass"
-		case .settings: 	return "gearshape.2.fill"
+		case .settings: 	return "gearshape.fill"
 		case .certificates: return "person.text.rectangle"
 		}
 	}
@@ -42,6 +45,7 @@ enum TabEnum: String, CaseIterable, Hashable {
 	static func view(for tab: TabEnum) -> some View {
 		switch tab {
 		case .today:        AppStoreTodayView()
+		case .games:        AppStoreGamesView()
 		case .sources:      SourcesView()
 		case .library:      LibraryView()
 		case .search:       AppStoreSearchView()
@@ -53,16 +57,14 @@ enum TabEnum: String, CaseIterable, Hashable {
 	static var defaultTabs: [TabEnum] {
 		return [
 			.today,
+			.games,
 			.sources,
 			.library,
-			.search,
-			.settings
+			.search
 		]
 	}
 	
 	static var customizableTabs: [TabEnum] {
-		return [
-			.certificates
-		]
+		return []
 	}
 }
