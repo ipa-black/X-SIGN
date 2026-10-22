@@ -1,41 +1,36 @@
 //
-//  TabbarController.swift
+//  TabbarView.swift
 //  feather
 //
 //  Created by samara on 5/17/24.
-//  Copyright (c) 2024 Samara M (khcrysalis)
 //
 
 import SwiftUI
 
-@available(iOS 18, *)
-struct ExtendedTabbarView: View {
-	@AppStorage("Feather.tabCustomization") var customization = TabViewCustomization()
+struct TabbarView: View {
+	@Binding var selectedTab: TabEnum
 	
 	var body: some View {
-		TabView {
-			Tab(TabEnum.today.title, systemImage: TabEnum.today.icon) {
-				TabEnum.view(for: .today)
-			}
-			
-			Tab(TabEnum.games.title, systemImage: TabEnum.games.icon) {
-				TabEnum.view(for: .games)
-			}
-			
-			Tab(TabEnum.sources.title, systemImage: TabEnum.sources.icon) {
-				TabEnum.view(for: .sources)
-			}
-			
-			Tab(TabEnum.library.title, systemImage: TabEnum.library.icon) {
-				TabEnum.view(for: .library)
-			}
-			
-			Tab(TabEnum.search.title, systemImage: TabEnum.search.icon, role: .search) {
-				TabEnum.view(for: .search)
+		HStack {
+			ForEach(TabEnum.defaultTabs, id: \.self) { tab in
+				Spacer()
+				Button {
+					selectedTab = tab
+					UIImpactFeedbackGenerator(style: .light).impactOccurred()
+				} label: {
+					VStack(spacing: 4) {
+						Image(systemName: tab.icon)
+							.font(.system(size: 20, weight: selectedTab == tab ? .bold : .regular))
+						Text(tab.title)
+							.font(.system(size: 10, weight: selectedTab == tab ? .bold : .medium))
+					}
+					.foregroundStyle(selectedTab == tab ? Color.accentColor : Color.secondary)
+				}
+				.buttonStyle(.plain)
+				Spacer()
 			}
 		}
-		.tabViewStyle(.sidebarAdaptable)
-		.tabViewCustomization($customization)
-		.environment(\.layoutDirection, .rightToLeft)
+		.padding(.vertical, 8)
+		.background(.ultraThinMaterial)
 	}
 }
