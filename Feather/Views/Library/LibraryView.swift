@@ -9,7 +9,7 @@ import SwiftUI
 import CoreData
 import NimbleViews
 
-// MARK: - Minimalist Signing View with Top App Icon Settings Button
+// MARK: - Minimalist Signing View with 1-Click Instant Sign
 struct LibraryView: View {
 	@StateObject var downloadManager = DownloadManager.shared
 	@StateObject var sourcesViewModel = SourcesViewModel.shared
@@ -22,6 +22,9 @@ struct LibraryView: View {
 	@State private var _isSettingsPresenting = false
 	@State private var _alertDownloadString: String = ""
 	
+	@State private var _signingInProgressUUIDs: Set<String> = []
+	@State private var _oneClickStatusMessage: String? = nil
+	
 	@State private var _selectedAppUUIDs: Set<String> = []
 	@State private var _editMode: EditMode = .inactive
 	
@@ -31,9 +34,24 @@ struct LibraryView: View {
 	@Namespace private var _namespace
 	
 	private func filteredAndSortedApps<T>(from apps: FetchedResults<T>) -> [T] where T: NSManagedObject {
-		apps.filter {
-			_searchText.isEmpty ||
-				(($0.value(forKey: "name") as? String)?.localizedCaseInsensitiveContains(_searchText) ?? false)
+		let query = AppStoreBilingualEngine.normalize(_searchText)
+		guard !query.isEmpty else { return Array(apps) }
+		
+		return apps.filter { item in
+			let name = (item.value(forKey: "name") as? String) ?? ""
+			let identifier = (item.value(forKey: "identifier") as? String) ?? ""
+			let combined = AppStoreBilingualEngine.normalize("\(name) \(identifier)")
+			
+			if combined.contains(query) { return true }
+			
+			for group in AppStoreBilingualEngine.synonymGroups {
+				let normalizedGroup = group.map { AppStoreBilingualEngine.normalize($0) }
+				if normalizedGroup.contains(where: { combined.contains($0) }) &&
+				   normalizedGroup.contains(where: { $0.contains(query) || query.contains($0) }) {
+					return true
+				}
+			}
+			return false
 		}
 	}
 	
@@ -56,6 +74,11 @@ struct LibraryView: View {
 	) private var _importedApps: FetchedResults<Imported>
 	
 	@FetchRequest(
+		entity: CertificatePair.entity(),
+		sortDescriptors: [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)]
+	) private var _certificates: FetchedResults<CertificatePair>
+	
+	@FetchRequest(
 		entity: AltSource.entity(),
 		sortDescriptors: [NSSortDescriptor(keyPath: \AltSource.name, ascending: true)]
 	) private var _sources: FetchedResults<AltSource>
@@ -74,23 +97,87 @@ struct LibraryView: View {
 					.listRowBackground(Color.clear)
 				}
 				
+				if let status = _oneClickStatusMessage {
+					Section {
+						HStack(spacing: 10) {
+							ProgressView()
+								.tint(.blue)
+							Text(status)
+								.font(.subheadline.weight(.semibold))
+								.foregroundStyle(.white)
+							Spacer()
+						}
+						.padding(.vertical, 4)
+					}
+				}
+				
 				if !_filteredImportedApps.isEmpty && (_selectedScope == .all || _selectedScope == .imported) {
-					NBSection("جاهزة للتوقيع", secondary: _filteredImportedApps.count.description) {
+					NBSection("جاهزة للتوقيع الفوري", secondary: _filteredImportedApps.count.description) {
 						ForEach(_filteredImportedApps, id: \.uuid) { app in
-							LibraryCellView(
-								app: app,
-								selectedInfoAppPresenting: $_selectedInfoAppPresenting,
-								selectedSigningAppPresenting: $_selectedSigningAppPresenting,
-								selectedInstallAppPresenting: $_selectedInstallAppPresenting,
-								selectedAppUUIDs: $_selectedAppUUIDs
-							)
-							.compatMatchedTransitionSource(id: app.uuid ?? "", ns: _namespace)
+							VStack(spacing: 8) {
+								LibraryCellView(
+									app: app,
+									selectedInfoAppPresenting: $_selectedInfoAppPresenting,
+									selectedSigningAppPresenting: $_selectedSigningAppPresenting,
+									selectedInstallAppPresenting: $_selectedInstallAppPresenting,
+									selectedAppUUIDs: $_selectedAppUUIDs
+								)
+								.compatMatchedTransitionSource(id: app.uuid ?? "", ns: _namespace)
+								
+								HStack(spacing: 10) {
+									Button {
+										_oneClickSign(app: app)
+									} label: {
+										HStack(spacing: 6) {
+											if _signingInProgressUUIDs.contains(app.uuid ?? "") {
+												ProgressView()
+													.tint(.white)
+													.scaleEffect(0.8)
+												Text("جاري التوقيع...")
+													.font(.footnote.weight(.bold))
+											} else {
+												Image(systemName: "bolt.fill")
+													.font(.footnote.weight(.bold))
+												Text("توقيع وتثبيت بضغطة واحدة")
+													.font(.footnote.weight(.bold))
+											}
+										}
+										.foregroundStyle(.white)
+										.frame(maxWidth: .infinity)
+										.padding(.vertical, 8)
+										.background(
+											Capsule(style: .continuous)
+												.fill(
+													LinearGradient(
+														colors: [Color.blue, Color.indigo],
+														startPoint: .leading,
+														endPoint: .trailing
+													)
+												)
+										)
+									}
+									.buttonStyle(.plain)
+									.disabled(_signingInProgressUUIDs.contains(app.uuid ?? ""))
+									
+									Button {
+										_selectedSigningAppPresenting = AnyApp(base: app)
+									} label: {
+										Image(systemName: "slider.horizontal.3")
+											.font(.footnote.weight(.bold))
+											.foregroundStyle(.secondary)
+											.frame(width: 36, height: 32)
+											.background(Color(white: 0.16), in: Capsule())
+									}
+									.buttonStyle(.plain)
+								}
+							}
+							.padding(.vertical, 2)
 						}
 					}
 				}
 				
 				if !_filteredSignedApps.isEmpty && (_selectedScope == .all || _selectedScope == .signed) {
-					NBSection("الموقعة", secondary: _filteredSignedApps.count.description) {
+					NBSection("الموقعة والجاهزة للتثبيت", secondary: _filteredSignedApps.count.description) {
 						ForEach(_filteredSignedApps, id: \.uuid) { app in
 							LibraryCellView(
 								app: app,
@@ -104,7 +191,7 @@ struct LibraryView: View {
 					}
 				}
 			}
-			.searchable(text: $_searchText, placement: .platform(), prompt: "بحث في التوقيع...")
+			.searchable(text: $_searchText, placement: .platform(), prompt: "بحث في التوقيع (عربي / إنجليزي)...")
 			.scrollDismissesKeyboard(.interactively)
 			.overlay {
 				if _filteredSignedApps.isEmpty && _filteredImportedApps.isEmpty {
@@ -211,6 +298,56 @@ struct LibraryView: View {
 		}
 		.environment(\.layoutDirection, .rightToLeft)
 		.preferredColorScheme(.dark)
+	}
+	
+	private func _oneClickSign(app: AppInfoPresentable) {
+		let selectedCertIndex = UserDefaults.standard.integer(forKey: "feather.selectedCert")
+		let activeCert: CertificatePair? = {
+			if _certificates.indices.contains(selectedCertIndex) {
+				return _certificates[selectedCertIndex]
+			}
+			return _certificates.first
+		}()
+		
+		guard let cert = activeCert else {
+			UIAlertController.showAlertWithOk(
+				title: "لا توجد شهادة",
+				message: "يرجى إضافة شهادة توقيع أولاً من قائمة الإعدادات في الأعلى."
+			)
+			return
+		}
+		
+		let uuid = app.uuid ?? ""
+		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+		_signingInProgressUUIDs.insert(uuid)
+		_oneClickStatusMessage = "جاري توقيع \(app.name ?? "التطبيق")..."
+		
+		let options = OptionsManager.shared.options
+		
+		FR.signPackageFile(
+			app,
+			using: options,
+			icon: nil,
+			certificate: cert
+		) { error in
+			DispatchQueue.main.async {
+				_signingInProgressUUIDs.remove(uuid)
+				_oneClickStatusMessage = nil
+				
+				if let error {
+					UINotificationFeedbackGenerator().notificationOccurred(.error)
+					UIAlertController.showAlertWithOk(
+						title: "فشل التوقيع",
+						message: error.localizedDescription
+					)
+				} else {
+					UINotificationFeedbackGenerator().notificationOccurred(.success)
+					if let newlySigned = _signedApps.first {
+						_selectedInstallAppPresenting = AnyApp(base: newlySigned)
+					}
+				}
+			}
+		}
 	}
 	
 	private func _bulkDeleteSelectedApps() {
