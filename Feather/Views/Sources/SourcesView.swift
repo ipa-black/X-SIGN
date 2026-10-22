@@ -13,14 +13,13 @@ import NukeUI
 import Nuke
 import UIKit
 
-// MARK: - Protected Sources Vault (Hides Core Sources & Blocks All URL Exports)
 enum ProtectedSourcesVault {
 	static let coreURLs: [String] = [
 		"https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json",
+		"https://repository.apptesters.org/",
 		"https://repo.apptesters.org/"
 	]
 	
-	// أي سورس أساسي يكون مخفياً بالكامل من قوائم السورسات حتى لا يرى أحد رابطه
 	static func isHiddenCoreSource(_ source: AltSource) -> Bool {
 		let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
 		let idStr = source.identifier?.lowercased() ?? ""
@@ -30,7 +29,6 @@ enum ProtectedSourcesVault {
 	}
 }
 
-// MARK: - Bilingual Search & Localization Engine (Arabic <-> English)
 enum AppStoreBilingualEngine {
 	static let synonymGroups: [[String]] = [
 		["instagram", "insta", "ig", "rocket", "plus", "bhinsta", "انستقرام", "انستا", "انستجرام", "إنستجرام", "انستغرام", "إنستغرام"],
@@ -167,7 +165,6 @@ enum AppStoreBilingualEngine {
 	}
 }
 
-// MARK: - Precomputed App Store Item
 struct AppStoreAppItem: Identifiable, Hashable {
 	let id: String
 	let sourceURL: URL?
@@ -218,7 +215,6 @@ struct AppStoreAppItem: Identifiable, Hashable {
 	}
 }
 
-// MARK: - Exact App Store 2026 Categories
 enum AppStore2026Category: String, CaseIterable, Identifiable {
 	case topApps = "التطبيقات الأكثر تنزيلاً"
 	case topGames = "الألعاب الأكثر تنزيلاً"
@@ -372,7 +368,6 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 	}
 }
 
-// MARK: - Background-Threaded Store Cache Manager (Fixes UI Freeze 100%)
 @MainActor
 final class AppStoreCacheManager: ObservableObject {
 	static let shared = AppStoreCacheManager()
@@ -484,7 +479,6 @@ final class AppStoreCacheManager: ObservableObject {
 	}
 }
 
-// MARK: - 1-Click Download -> Auto-Sign -> Auto-Install Engine
 @MainActor
 final class AutoSignPipelineManager: ObservableObject {
 	static let shared = AutoSignPipelineManager()
@@ -536,7 +530,7 @@ final class AutoSignPipelineManager: ObservableObject {
 			activeStates[appKey] = nil
 			UIAlertController.showAlertWithOk(
 				title: "تم التنزيل",
-				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من الإعدادات في الأعلى لتفعيله وتوقيعه تلقائياً."
+				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من الإعدادات في الأعلى لتفعليه وتوقيعه تلقائياً."
 			)
 			return
 		}
@@ -598,7 +592,6 @@ final class AutoSignPipelineManager: ObservableObject {
 	}
 }
 
-// MARK: - App Icon Provider
 enum AppStoreAppIconProvider {
 	static let cachedIcon: UIImage? = {
 		if let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
@@ -615,7 +608,6 @@ enum AppStoreAppIconProvider {
 	}()
 }
 
-// MARK: - 1. TODAY VIEW (صفحة اليوم - App Store 2026)
 struct AppStoreTodayView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
@@ -727,7 +719,6 @@ struct AppStoreTodayView: View {
 	}
 }
 
-// MARK: - 2. APPS VIEW (قسم التطبيقات فقط - لا يعرض الألعاب نهائياً)
 struct SourcesView: View {
 	@StateObject var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
@@ -913,7 +904,6 @@ struct SourcesView: View {
 	}
 }
 
-// MARK: - 3. GAMES VIEW (قسم الألعاب فقط - يعرض الألعاب حصرياً)
 struct AppStoreGamesView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
@@ -1094,7 +1084,6 @@ struct AppStoreGamesView: View {
 	}
 }
 
-// MARK: - 4. SEARCH VIEW (بحث ثنائي اللغة عربي + إنجليزي وتصفح الفئات)
 struct AppStoreSearchView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
@@ -1273,7 +1262,6 @@ struct AppStoreSearchView: View {
 	}
 }
 
-// MARK: - Top Header with App Icon as Account Avatar & Auto-Install Sheet
 struct AppStore2026TopHeader: View {
 	let title: String
 	let onSettingsTap: () -> Void
@@ -1344,7 +1332,6 @@ struct AppStoreAccountAppIconButton: View {
 	}
 }
 
-// MARK: - Settings Popup (Core Sources Completely Hidden, No Export Allowed)
 struct AppStore2026SettingsPopup: View {
 	@Environment(\.dismiss) private var dismiss
 	let sources: FetchedResults<AltSource>
@@ -1352,7 +1339,6 @@ struct AppStore2026SettingsPopup: View {
 	@State private var isAddingSource = false
 	@State private var selectedSection = 0
 	
-	// إخفاء السورسين الأساسيين تماماً من القائمة حتى لا يظهر اسمها أو رابطها لأي شخص
 	private var userAddedSourcesOnly: [AltSource] {
 		sources.filter { !ProtectedSourcesVault.isHiddenCoreSource($0) }
 	}
@@ -1458,7 +1444,6 @@ struct AppStore2026SettingsPopup: View {
 	}
 }
 
-// نافذة إضافة سورس نظيفة وآمنة (بدون زر تصدير السورسات نهائياً)
 struct CustomSafeAddSourceSheet: View {
 	@Environment(\.dismiss) private var dismiss
 	@State private var sourceURLText = ""
@@ -1516,7 +1501,6 @@ struct CustomSafeAddSourceSheet: View {
 	}
 }
 
-// MARK: - Smart App Store Download & Auto-Sign Button
 struct AppStore2026DownloadButton: View {
 	let app: ASRepository.App
 	var useCloudStyle: Bool = false
@@ -1601,8 +1585,6 @@ struct AppStore2026DownloadButton: View {
 		.buttonStyle(.plain)
 	}
 }
-
-// MARK: - App Store 2026 Visual Cards
 
 struct Today2026HeroCard: View {
 	let item: AppStoreAppItem
