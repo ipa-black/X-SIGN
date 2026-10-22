@@ -157,11 +157,11 @@ struct FeatherApp: App {
 	}
 }
 
-// MARK: - Slow-Drawing "X" Splash Screen while Apps Load in Background
+// MARK: - 3D Professional Slow-Drawing "X" Splash Screen
 struct XLetterShape: Shape {
 	func path(in rect: CGRect) -> Path {
 		var path = Path()
-		let inset: CGFloat = rect.width * 0.14
+		let inset: CGFloat = rect.width * 0.15
 		path.move(to: CGPoint(x: inset, y: inset))
 		path.addLine(to: CGPoint(x: rect.width - inset, y: rect.height - inset))
 		path.move(to: CGPoint(x: rect.width - inset, y: inset))
@@ -175,75 +175,68 @@ struct XSignLaunchSplashView: View {
 	
 	@State private var drawProgress: CGFloat = 0.0
 	@State private var glowOpacity: Double = 0.0
-	@State private var subtitleOpacity: Double = 0.0
-	@State private var scaleEffectValue: CGFloat = 0.90
+	@State private var scaleEffectValue: CGFloat = 0.85
 	
 	var body: some View {
 		ZStack {
 			Color.black.ignoresSafeArea()
 			
+			// إضاءة خلفية 3D عميقة متوهجة
 			Circle()
 				.fill(
 					RadialGradient(
-						colors: [Color.blue.opacity(0.28), Color.indigo.opacity(0.10), .clear],
+						colors: [Color.white.opacity(0.18), Color.blue.opacity(0.12), .clear],
 						center: .center,
-						startRadius: 10,
-						endRadius: 190
+						startRadius: 5,
+						endRadius: 210
 					)
 				)
-				.frame(width: 350, height: 350)
+				.frame(width: 380, height: 380)
 				.opacity(glowOpacity)
 			
-			VStack(spacing: 28) {
-				ZStack {
-					XLetterShape()
-						.stroke(
-							Color.white.opacity(0.08),
-							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
-						)
-						.frame(width: 132, height: 132)
-					
-					XLetterShape()
-						.trim(from: 0.0, to: drawProgress)
-						.stroke(
-							LinearGradient(
-								colors: [
-									Color.white,
-									Color(red: 0.35, green: 0.68, blue: 1.0),
-									Color(red: 0.18, green: 0.42, blue: 0.98)
-								],
-								startPoint: .topLeading,
-								endPoint: .bottomTrailing
-							),
-							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
-						)
-						.frame(width: 132, height: 132)
-						.shadow(color: Color.blue.opacity(0.65), radius: 16, x: 0, y: 0)
-				}
-				.scaleEffect(scaleEffectValue)
+			ZStack {
+				// طبقة الظل السفلي لإعطاء مظهر 3D بارز
+				XLetterShape()
+					.trim(from: 0.0, to: drawProgress)
+					.stroke(
+						Color.blue.opacity(0.5),
+						style: StrokeStyle(lineWidth: 22, lineCap: .round, lineJoin: .round)
+					)
+					.frame(width: 140, height: 140)
+					.blur(radius: 8)
+					.offset(x: 0, y: 4)
 				
-				VStack(spacing: 8) {
-					Text("X-SIGN")
-						.font(.system(size: 22, weight: .heavy, design: .rounded))
-						.tracking(4)
-						.foregroundStyle(.white)
-					
-					Text("جاري تحميل المتجر والتطبيقات...")
-						.font(.system(size: 13, weight: .medium))
-						.foregroundStyle(.secondary)
-				}
-				.opacity(subtitleOpacity)
+				// المسار الخلفي الخافت
+				XLetterShape()
+					.stroke(
+						Color.white.opacity(0.06),
+						style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
+					)
+					.frame(width: 140, height: 140)
+				
+				// حرف X الرئيسي الأبيض الناصع بتصميم 3D
+				XLetterShape()
+					.trim(from: 0.0, to: drawProgress)
+					.stroke(
+						LinearGradient(
+							colors: [.white, Color(white: 0.82), .white],
+							startPoint: .topLeading,
+							endPoint: .bottomTrailing
+						),
+						style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
+					)
+					.frame(width: 140, height: 140)
+					.shadow(color: Color.white.opacity(0.8), radius: 12, x: 0, y: 0)
 			}
+			.scaleEffect(scaleEffectValue)
 		}
 		.onAppear {
-			// رسم بطيء لحرف X يستغرق 2.8 ثانية حتى تكتمل قراءة السورسات في الخلفية
 			withAnimation(.easeInOut(duration: 2.8)) {
 				drawProgress = 1.0
 				scaleEffectValue = 1.0
 			}
-			withAnimation(.easeIn(duration: 1.2).delay(0.3)) {
+			withAnimation(.easeIn(duration: 1.2).delay(0.2)) {
 				glowOpacity = 1.0
-				subtitleOpacity = 1.0
 			}
 			DispatchQueue.main.asyncAfter(deadline: .now() + 3.3) {
 				onFinished()
@@ -309,8 +302,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			let request = NSFetchRequest<AltSource>(entityName: "AltSource")
 			let existingSources = (try? context.fetch(request)) ?? []
 			
-			// 1. حذف أي سورسات افتراضية قديمة كانت تأتي مع Feather الأصلي
-			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v1"
+			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v2"
 			if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
 				for source in existingSources {
 					let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
@@ -321,10 +313,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				UserDefaults.standard.set(true, forKey: purgedOnceKey)
 			}
 			
-			// 2. حقن السورسين الأساسيين (AppTesters + IPABLACK) بشكل مخفي ومحمي
 			let coreRepos: [(name: String, id: String, url: String)] = [
 				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"),
-				("AppTesters", "xsign.core.apptesters", "https://repo.apptesters.org/")
+				("AppTesters", "xsign.core.apptesters", "https://repository.apptesters.org/")
 			]
 			
 			let updatedExisting = (try? context.fetch(request)) ?? []
