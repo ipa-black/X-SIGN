@@ -13,9 +13,25 @@ import NukeUI
 import Nuke
 import UIKit
 
+// MARK: - Protected Sources Vault (Hides Core Sources & Blocks All URL Exports)
+enum ProtectedSourcesVault {
+	static let coreURLs: [String] = [
+		"https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json",
+		"https://repo.apptesters.org/"
+	]
+	
+	// أي سورس أساسي يكون مخفياً بالكامل من قوائم السورسات حتى لا يرى أحد رابطه
+	static func isHiddenCoreSource(_ source: AltSource) -> Bool {
+		let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
+		let idStr = source.identifier?.lowercased() ?? ""
+		return urlStr.contains("ipablack") ||
+			urlStr.contains("apptesters") ||
+			idStr.contains("xsign.core")
+	}
+}
+
 // MARK: - Bilingual Search & Localization Engine (Arabic <-> English)
 enum AppStoreBilingualEngine {
-	// قاموس شامل يربط أسماء التطبيقات والكلمات المفتاحية بين العربية والإنجليزية
 	static let synonymGroups: [[String]] = [
 		["instagram", "insta", "ig", "rocket", "plus", "bhinsta", "انستقرام", "انستا", "انستجرام", "إنستجرام", "انستغرام", "إنستغرام"],
 		["whatsapp", "watusi", "wa", "واتساب", "واتس", "واتس اب", "وتساب"],
@@ -143,7 +159,6 @@ enum AppStoreBilingualEngine {
 			return "توقيع وتثبيت تطبيقات IPA بسهولة"
 		}
 		
-		// إذا كان الوصف الأصلي يحتوي على حروف عربية نعرضه، وإلا نعرض وصف الفئة بالعربية
 		if let original = app.currentDescription,
 		   original.range(of: "\\p{Arabic}", options: .regularExpression) != nil {
 			return original
@@ -152,7 +167,7 @@ enum AppStoreBilingualEngine {
 	}
 }
 
-// MARK: - Precomputed App Store Item (Strict App vs Game Separation)
+// MARK: - Precomputed App Store Item
 struct AppStoreAppItem: Identifiable, Hashable {
 	let id: String
 	let sourceURL: URL?
@@ -203,7 +218,7 @@ struct AppStoreAppItem: Identifiable, Hashable {
 	}
 }
 
-// MARK: - Exact App Store 2026 Categories (Matching Screenshots 3, 4, 5)
+// MARK: - Exact App Store 2026 Categories
 enum AppStore2026Category: String, CaseIterable, Identifiable {
 	case topApps = "التطبيقات الأكثر تنزيلاً"
 	case topGames = "الألعاب الأكثر تنزيلاً"
@@ -310,13 +325,11 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 		}
 	}
 	
-	// تصنيف صارم جداً: يفصل الألعاب 100% عن التطبيقات
 	static func strictlyClassify(app: ASRepository.App) -> AppStore2026Category {
 		let nameAndBundle = "\(app.name ?? "") \(app.id ?? "") \(app.category ?? "")".lowercased()
 		let desc = (app.localizedDescription ?? app.subtitle ?? "").lowercased()
 		let combined = "\(nameAndBundle) \(desc)"
 		
-		// أولاً: فحص التطبيقات المعروفة لضمان عدم تصنيفها كألعاب بالخطأ
 		let socialApps = ["instagram", "whatsapp", "tiktok", "snapchat", "twitter", "telegram", "facebook", "discord", "messenger", "reddit", "threads", "watusi", "bhinsta", "uplus", "rocket", "swiftgram", "nicegram", "wicked", "انستقرام", "واتس", "تيك توك", "سناب", "تليجرام", "تويتر", "فيسبوك", "ديسكورد"]
 		if socialApps.contains(where: { nameAndBundle.contains($0) }) { return .social }
 		
@@ -332,7 +345,6 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 		let devToolApps = ["filza", "esign", "feather", "scarlet", "troll", "gbox", "ksign", "x-sign", "vsign", "vpn", "adblock", "adguard", "dns", "flex", "igamegod", "dl", "terminal", "ssh", "cert", "ipa", "sideload", "altstore", "فيلزا", "توقيع", "شهادات", "ترول"]
 		if devToolApps.contains(where: { nameAndBundle.contains($0) }) { return .devTools }
 		
-		// ثانياً: فحص دقيق وشامل للألعاب (تذهب حصرياً لقسم الألعاب)
 		let pvpKeywords = ["pubg", "8ball", "pool", "cod", "callofduty", "freefire", "brawl", "fortnite", "fifa", "efootball", "pes", "mobilelegends", "wildrift", "standoff", "bullet", "pvp", "multiplayer", "ببجي", "بلياردو", "فري فاير", "كود", "فيفا", "بيس"]
 		if pvpKeywords.contains(where: { combined.contains($0) }) { return .pvpGames }
 		
@@ -360,101 +372,233 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 	}
 }
 
-// MARK: - High-Performance Store Cache Manager (Strict Separation)
+// MARK: - Background-Threaded Store Cache Manager (Fixes UI Freeze 100%)
 @MainActor
 final class AppStoreCacheManager: ObservableObject {
 	static let shared = AppStoreCacheManager()
 	
-	// جميع العناصر للبحث واليوم
 	@Published private(set) var allCombinedItems: [AppStoreAppItem] = []
-	// التطبيقات فقط (بدون أي لعبة نهائياً)
 	@Published private(set) var pureAppsOnly: [AppStoreAppItem] = []
-	// الألعاب فقط (بدون أي تطبيق نهائياً)
 	@Published private(set) var pureGamesOnly: [AppStoreAppItem] = []
-	// القوائم المصنفة لكل فئة بدقة
 	@Published private(set) var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] = [:]
 	
 	private var lastSourceSignature: String = ""
-	private var hasPerformedInitialFetch = false
+	private var isFetching = false
+	private var isBuildingCache = false
 	
 	func ensureFetched(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
-		if !hasPerformedInitialFetch || viewModel.sources.isEmpty {
-			hasPerformedInitialFetch = true
+		if !isFetching && viewModel.sources.isEmpty {
+			isFetching = true
 			await viewModel.fetchSources(sources)
+			isFetching = false
 		}
 		rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
 	}
 	
 	func forceRefresh(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
+		guard !isFetching else { return }
+		isFetching = true
 		await viewModel.fetchSources(sources, refresh: true)
+		isFetching = false
 		lastSourceSignature = ""
 		rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
 	}
 	
 	func rebuildCacheIfNeeded(sources: FetchedResults<AltSource>, repositoriesMap: [AltSource: ASRepository]) {
+		guard !isBuildingCache else { return }
 		let totalCount = repositoriesMap.values.reduce(0) { $0 + $1.apps.count }
 		let signature = "\(sources.count)_\(totalCount)"
-		guard signature != lastSourceSignature else { return }
+		guard signature != lastSourceSignature, totalCount > 0 else { return }
+		
 		lastSourceSignature = signature
+		isBuildingCache = true
 		
-		var allItems: [AppStoreAppItem] = []
-		allItems.reserveCapacity(totalCount)
-		var seenKeys = Set<String>()
+		let snapshot: [(URL?, ASRepository)] = sources.compactMap { source in
+			guard let repo = repositoriesMap[source] else { return nil }
+			return (source.sourceURL, repo)
+		}
 		
-		for source in sources {
-			guard let repo = repositoriesMap[source] else { continue }
-			let sourceURLString = source.sourceURL?.absoluteString ?? ""
-			for app in repo.apps {
-				let uniqueKey = "\(app.id ?? app.currentName)_\(sourceURLString)"
-				if seenKeys.insert(uniqueKey).inserted {
-					allItems.append(
-						AppStoreAppItem(
-							id: uniqueKey,
-							sourceURL: source.sourceURL,
-							repository: repo,
-							app: app
+		Task.detached(priority: .userInitiated) {
+			var allItems: [AppStoreAppItem] = []
+			allItems.reserveCapacity(totalCount)
+			var seenKeys = Set<String>()
+			
+			for (sourceURL, repo) in snapshot {
+				let sourceURLString = sourceURL?.absoluteString ?? ""
+				for app in repo.apps {
+					let uniqueKey = "\(app.id ?? app.currentName)_\(sourceURLString)"
+					if seenKeys.insert(uniqueKey).inserted {
+						allItems.append(
+							AppStoreAppItem(
+								id: uniqueKey,
+								sourceURL: sourceURL,
+								repository: repo,
+								app: app
+							)
 						)
-					)
+					}
 				}
 			}
-		}
-		
-		// فصل حازم 100%: التطبيقات في قائمة، والألعاب في قائمة منفصلة
-		let onlyApps = allItems.filter { !$0.isGame }
-		let onlyGames = allItems.filter { $0.isGame }
-		
-		var categoryDict: [AppStore2026Category: [AppStoreAppItem]] = [:]
-		for category in AppStore2026Category.allCases {
-			switch category {
-			case .topApps:
-				categoryDict[category] = onlyApps
-			case .bestSellingApps:
-				categoryDict[category] = Array(onlyApps.reversed())
-			case .topGames:
-				categoryDict[category] = onlyGames
-			case .bestSellingGames:
-				categoryDict[category] = Array(onlyGames.reversed())
-			case .timePass:
-				let casual = onlyGames.filter { $0.category == .casualGames || $0.category == .puzzleGames }
-				categoryDict[category] = casual.isEmpty ? onlyGames : casual
-			default:
-				let exactMatches = allItems.filter { $0.category == category }
-				if !exactMatches.isEmpty {
-					categoryDict[category] = exactMatches
-				} else {
-					categoryDict[category] = category.isGameCategory ? onlyGames : onlyApps
+			
+			let onlyApps = allItems.filter { !$0.isGame }
+			let onlyGames = allItems.filter { $0.isGame }
+			
+			var categoryDict: [AppStore2026Category: [AppStoreAppItem]] = [:]
+			for category in AppStore2026Category.allCases {
+				switch category {
+				case .topApps:
+					categoryDict[category] = onlyApps
+				case .bestSellingApps:
+					categoryDict[category] = Array(onlyApps.reversed())
+				case .topGames:
+					categoryDict[category] = onlyGames
+				case .bestSellingGames:
+					categoryDict[category] = Array(onlyGames.reversed())
+				case .timePass:
+					let casual = onlyGames.filter { $0.category == .casualGames || $0.category == .puzzleGames }
+					categoryDict[category] = casual.isEmpty ? onlyGames : casual
+				default:
+					let exactMatches = allItems.filter { $0.category == category }
+					if !exactMatches.isEmpty {
+						categoryDict[category] = exactMatches
+					} else {
+						categoryDict[category] = category.isGameCategory ? onlyGames : onlyApps
+					}
 				}
 			}
+			
+			let finalAll = allItems
+			let finalApps = onlyApps
+			let finalGames = onlyGames
+			let finalCats = categoryDict
+			
+			await MainActor.run {
+				let manager = AppStoreCacheManager.shared
+				manager.allCombinedItems = finalAll
+				manager.pureAppsOnly = finalApps
+				manager.pureGamesOnly = finalGames
+				manager.itemsByCategory = finalCats
+				manager.isBuildingCache = false
+			}
 		}
-		
-		self.allCombinedItems = allItems
-		self.pureAppsOnly = onlyApps
-		self.pureGamesOnly = onlyGames
-		self.itemsByCategory = categoryDict
 	}
 }
 
-// MARK: - App Icon Provider (Loads Our App's Own Icon for the Top Avatar)
+// MARK: - 1-Click Download -> Auto-Sign -> Auto-Install Engine
+@MainActor
+final class AutoSignPipelineManager: ObservableObject {
+	static let shared = AutoSignPipelineManager()
+	
+	@Published var activeStates: [String: Stage] = [:]
+	@Published var readyToInstallApp: AnyApp? = nil
+	
+	enum Stage: Equatable {
+		case downloading
+		case signing
+		case ready
+	}
+	
+	private var watchTasks: [String: Task<Void, Never>] = [:]
+	
+	func downloadAndAutoSign(app: ASRepository.App) {
+		guard let url = app.currentDownloadUrl else { return }
+		let appKey = app.id ?? app.currentName
+		
+		guard activeStates[appKey] == nil else { return }
+		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+		activeStates[appKey] = .downloading
+		
+		let existingUUIDs = Set(Self.fetchImportedApps().compactMap { $0.uuid })
+		let downloadID = "AutoSign_\(UUID().uuidString)"
+		_ = DownloadManager.shared.startDownload(from: url, id: downloadID)
+		
+		watchTasks[appKey]?.cancel()
+		watchTasks[appKey] = Task {
+			for _ in 0..<360 {
+				if Task.isCancelled { return }
+				try? await Task.sleep(nanoseconds: 500_000_000)
+				
+				let currentImported = Self.fetchImportedApps()
+				if let newlyImported = currentImported.first(where: { item in
+					guard let uuid = item.uuid else { return false }
+					return !existingUUIDs.contains(uuid)
+				}) {
+					await triggerInstantSign(for: newlyImported, appKey: appKey)
+					return
+				}
+			}
+			activeStates[appKey] = nil
+		}
+	}
+	
+	private func triggerInstantSign(for importedApp: Imported, appKey: String) async {
+		guard let cert = Self.fetchActiveCertificate() else {
+			activeStates[appKey] = nil
+			UIAlertController.showAlertWithOk(
+				title: "تم التنزيل",
+				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من الإعدادات في الأعلى لتفعيله وتوقيعه تلقائياً."
+			)
+			return
+		}
+		
+		activeStates[appKey] = .signing
+		let options = OptionsManager.shared.options
+		
+		FR.signPackageFile(
+			importedApp,
+			using: options,
+			icon: nil,
+			certificate: cert
+		) { [weak self] error in
+			DispatchQueue.main.async {
+				guard let self else { return }
+				if let error {
+					self.activeStates[appKey] = nil
+					UINotificationFeedbackGenerator().notificationOccurred(.error)
+					UIAlertController.showAlertWithOk(
+						title: "فشل التوقيع التلقائي",
+						message: error.localizedDescription
+					)
+				} else {
+					self.activeStates[appKey] = .ready
+					UINotificationFeedbackGenerator().notificationOccurred(.success)
+					
+					if let latestSigned = Self.fetchSignedApps().first {
+						self.readyToInstallApp = AnyApp(base: latestSigned)
+					}
+					
+					DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+						self.activeStates[appKey] = nil
+					}
+				}
+			}
+		}
+	}
+	
+	private static func fetchImportedApps() -> [Imported] {
+		let request = NSFetchRequest<Imported>(entityName: "Imported")
+		request.sortDescriptors = [NSSortDescriptor(keyPath: \Imported.date, ascending: false)]
+		return (try? Storage.shared.context.fetch(request)) ?? []
+	}
+	
+	private static func fetchSignedApps() -> [Signed] {
+		let request = NSFetchRequest<Signed>(entityName: "Signed")
+		request.sortDescriptors = [NSSortDescriptor(keyPath: \Signed.date, ascending: false)]
+		return (try? Storage.shared.context.fetch(request)) ?? []
+	}
+	
+	private static func fetchActiveCertificate() -> CertificatePair? {
+		let request = NSFetchRequest<CertificatePair>(entityName: "CertificatePair")
+		request.sortDescriptors = [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)]
+		guard let certs = try? Storage.shared.context.fetch(request), !certs.isEmpty else {
+			return nil
+		}
+		let index = UserDefaults.standard.integer(forKey: "feather.selectedCert")
+		return certs.indices.contains(index) ? certs[index] : certs.first
+	}
+}
+
+// MARK: - App Icon Provider
 enum AppStoreAppIconProvider {
 	static let cachedIcon: UIImage? = {
 		if let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
@@ -501,7 +645,6 @@ struct AppStoreTodayView: View {
 						.padding(.horizontal, 18)
 						.padding(.top, 30)
 					} else {
-						// 1. Hero Card
 						if let firstHero = cache.pureGamesOnly.first ?? cache.allCombinedItems.first {
 							NavigationLink {
 								SourceAppsDetailView(
@@ -520,7 +663,6 @@ struct AppStoreTodayView: View {
 							.padding(.horizontal, 18)
 						}
 						
-						// 2. Center Icon Spotlight Banner
 						if let secondSpotlight = cache.pureAppsOnly.first ?? cache.allCombinedItems.dropFirst().first {
 							NavigationLink {
 								SourceAppsDetailView(
@@ -535,7 +677,6 @@ struct AppStoreTodayView: View {
 							.padding(.horizontal, 18)
 						}
 						
-						// 3. Games List Card (Exact 5 items like Apple Store)
 						let gameListItems = Array((cache.pureGamesOnly.isEmpty ? cache.allCombinedItems : cache.pureGamesOnly).prefix(5))
 						if !gameListItems.isEmpty {
 							Today2026ListSectionCard(
@@ -548,7 +689,6 @@ struct AppStoreTodayView: View {
 							.padding(.horizontal, 18)
 						}
 						
-						// 4. Apps List Card (Exact 5 items from pureAppsOnly)
 						let appListItems = Array(cache.pureAppsOnly.prefix(5))
 						if !appListItems.isEmpty {
 							Today2026ListSectionCard(
@@ -587,7 +727,7 @@ struct AppStoreTodayView: View {
 	}
 }
 
-// MARK: - 2. APPS VIEW (قسم التطبيقات فقط - لا يعرض الألعاب إطلاقاً!)
+// MARK: - 2. APPS VIEW (قسم التطبيقات فقط - لا يعرض الألعاب نهائياً)
 struct SourcesView: View {
 	@StateObject var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
@@ -600,7 +740,6 @@ struct SourcesView: View {
 		sortDescriptors: [NSSortDescriptor(keyPath: \AltSource.name, ascending: true)]
 	) private var _sources: FetchedResults<AltSource>
 	
-	// فئات التطبيقات فقط (بدون أي فئة ألعاب)
 	private let appOnlyCategories: [AppStore2026Category] = [
 		.social,
 		.photoVideo,
@@ -635,7 +774,6 @@ struct SourcesView: View {
 						.padding(.horizontal, 18)
 						.padding(.top, 30)
 					} else {
-						// 1. فلاتر فئات التطبيقات فقط
 						ScrollView(.horizontal, showsIndicators: false) {
 							HStack(spacing: 10) {
 								Button {
@@ -678,7 +816,6 @@ struct SourcesView: View {
 						}
 						
 						if _selectedAppCategory == nil {
-							// 2. البطاقات الترويجية العلوية للتطبيقات
 							ScrollView(.horizontal, showsIndicators: false) {
 								LazyHStack(spacing: 16) {
 									ForEach(Array(cache.pureAppsOnly.prefix(6))) { item in
@@ -697,14 +834,12 @@ struct SourcesView: View {
 								.padding(.horizontal, 18)
 							}
 							
-							// 3. قسم الثلاثة صفوف: التطبيقات الأكثر تنزيلاً
 							AppStore2026ThreeRowSection(
 								title: "التطبيقات الأكثر تنزيلاً",
 								subtitle: "أفضل التطبيقات المختارة لك",
 								items: Array(cache.pureAppsOnly.prefix(18))
 							)
 							
-							// 4. بطاقة تطبيقات التواصل الاجتماعي
 							let socialApps = cache.pureAppsOnly.filter { $0.category == .social }
 							if !socialApps.isEmpty {
 								Today2026ListSectionCard(
@@ -716,19 +851,8 @@ struct SourcesView: View {
 								)
 								.padding(.horizontal, 18)
 							}
-							
-							// 5. قسم الثلاثة صفوف: صور وفيديو + أدوات التطوير
-							let mediaAndPhotoApps = cache.pureAppsOnly.filter { $0.category == .photoVideo || $0.category == .mediaReaders }
-							if !mediaAndPhotoApps.isEmpty {
-								AppStore2026ThreeRowSection(
-									title: "صور وفيديو وترفيه",
-									subtitle: "مونتاج، تصميم، ومشاهدة بلا حدود",
-									items: Array(mediaAndPhotoApps.prefix(15))
-								)
-							}
 						}
 						
-						// 6. قائمة جميع التطبيقات (تطبيقات فقط 100% بتصميم آبل ستور النظيف)
 						HStack {
 							Text(_selectedAppCategory?.rawValue ?? "جميع التطبيقات")
 								.font(.system(size: 22, weight: .bold))
@@ -789,7 +913,7 @@ struct SourcesView: View {
 	}
 }
 
-// MARK: - 3. GAMES VIEW (قسم الألعاب فقط - يعرض الألعاب حصرياً!)
+// MARK: - 3. GAMES VIEW (قسم الألعاب فقط - يعرض الألعاب حصرياً)
 struct AppStoreGamesView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
@@ -828,27 +952,13 @@ struct AppStoreGamesView: View {
 					)
 					
 					if cache.pureGamesOnly.isEmpty {
-						VStack(spacing: 14) {
-							Image(systemName: "gamecontroller.fill")
-								.font(.system(size: 44))
-								.foregroundStyle(.blue)
-							Text("لا توجد ألعاب في المصادر الحالية")
-								.font(.title3.weight(.bold))
-								.foregroundStyle(.white)
-							Text("أضف سورس يحتوي على ألعاب لتظهر هنا تلقائياً.")
-								.font(.subheadline)
-								.foregroundStyle(.secondary)
-						}
-						.frame(maxWidth: .infinity)
-						.padding(32)
-						.background(
-							RoundedRectangle(cornerRadius: 26, style: .continuous)
-								.fill(Color(red: 0.11, green: 0.11, blue: 0.12))
+						AppStore2026EmptyState(
+							isLoading: !viewModel.isFinished,
+							onAddSource: { showAddSourceSheet = true }
 						)
 						.padding(.horizontal, 18)
 						.padding(.top, 20)
 					} else {
-						// فلاتر فئات الألعاب فقط
 						ScrollView(.horizontal, showsIndicators: false) {
 							HStack(spacing: 10) {
 								Button {
@@ -925,7 +1035,6 @@ struct AppStoreGamesView: View {
 							)
 						}
 						
-						// قائمة جميع الألعاب
 						HStack {
 							Text(selectedGameCategory?.rawValue ?? "جميع الألعاب")
 								.font(.system(size: 22, weight: .bold))
@@ -985,7 +1094,7 @@ struct AppStoreGamesView: View {
 	}
 }
 
-// MARK: - 4. SEARCH VIEW (بحث ثنائي اللغة عربي + إنجليزي وتصفح الفئات مطابق لـ App Store)
+// MARK: - 4. SEARCH VIEW (بحث ثنائي اللغة عربي + إنجليزي وتصفح الفئات)
 struct AppStoreSearchView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
@@ -1019,7 +1128,6 @@ struct AppStoreSearchView: View {
 					)
 					
 					if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-						// 1. قسم "مقترحات >" (مطابق لصورة App Store)
 						if !suggestedApps.isEmpty {
 							VStack(alignment: .leading, spacing: 14) {
 								HStack(spacing: 6) {
@@ -1066,7 +1174,6 @@ struct AppStoreSearchView: View {
 							}
 						}
 						
-						// 2. قسم "تصفح >" (نفس فئات وألوان وترتيب App Store 2026)
 						VStack(alignment: .leading, spacing: 14) {
 							HStack(spacing: 6) {
 								Text("تصفح")
@@ -1105,7 +1212,6 @@ struct AppStoreSearchView: View {
 							.padding(.horizontal, 18)
 						}
 					} else {
-						// نتائج البحث الفوري (عربي أو إنجليزي)
 						LazyVStack(spacing: 14) {
 							if searchResults.isEmpty {
 								VStack(spacing: 12) {
@@ -1115,7 +1221,7 @@ struct AppStoreSearchView: View {
 									Text("لا توجد نتائج لـ \"\(searchText)\"")
 										.font(.headline)
 										.foregroundStyle(.white)
-									Text("جرب البحث باسم التطبيق بالعربية أو الإنجليزية (مثل: انستقرام أو Instagram)")
+									Text("جرب البحث بالعربية أو الإنجليزية (مثل: انستقرام أو Instagram)")
 										.font(.caption)
 										.foregroundStyle(.secondary)
 										.multilineTextAlignment(.center)
@@ -1167,11 +1273,12 @@ struct AppStoreSearchView: View {
 	}
 }
 
-// MARK: - Top Header with App Icon as Account Avatar
+// MARK: - Top Header with App Icon as Account Avatar & Auto-Install Sheet
 struct AppStore2026TopHeader: View {
 	let title: String
 	let onSettingsTap: () -> Void
 	let onAddSourceTap: () -> Void
+	@ObservedObject private var autoSign = AutoSignPipelineManager.shared
 	
 	var body: some View {
 		HStack(alignment: .center) {
@@ -1195,6 +1302,11 @@ struct AppStore2026TopHeader: View {
 		}
 		.padding(.horizontal, 18)
 		.padding(.top, 10)
+		.sheet(item: $autoSign.readyToInstallApp) { signedApp in
+			InstallPreviewView(app: signedApp.base, isSharing: signedApp.archive)
+				.presentationDetents([.height(200)])
+				.presentationDragIndicator(.visible)
+		}
 	}
 }
 
@@ -1232,13 +1344,18 @@ struct AppStoreAccountAppIconButton: View {
 	}
 }
 
-// MARK: - Settings & Account Sheet
+// MARK: - Settings Popup (Core Sources Completely Hidden, No Export Allowed)
 struct AppStore2026SettingsPopup: View {
 	@Environment(\.dismiss) private var dismiss
 	let sources: FetchedResults<AltSource>
 	@ObservedObject var viewModel: SourcesViewModel
 	@State private var isAddingSource = false
 	@State private var selectedSection = 0
+	
+	// إخفاء السورسين الأساسيين تماماً من القائمة حتى لا يظهر اسمها أو رابطها لأي شخص
+	private var userAddedSourcesOnly: [AltSource] {
+		sources.filter { !ProtectedSourcesVault.isHiddenCoreSource($0) }
+	}
 	
 	var body: some View {
 		NavigationStack {
@@ -1271,8 +1388,8 @@ struct AppStore2026SettingsPopup: View {
 					
 					Picker("", selection: $selectedSection) {
 						Text("الإعدادات").tag(0)
-						Text("المصادر (\(sources.count))").tag(1)
-						Text("الشهادات").tag(2)
+						Text("الشهادات").tag(1)
+						Text("مصادري (\(userAddedSourcesOnly.count))").tag(2)
 					}
 					.pickerStyle(.segmented)
 				}
@@ -1283,40 +1400,209 @@ struct AppStore2026SettingsPopup: View {
 				if selectedSection == 0 {
 					SettingsView()
 				} else if selectedSection == 1 {
+					CertificatesView()
+				} else {
 					List {
 						Section {
 							Button {
 								isAddingSource = true
 							} label: {
-								Label("إضافة مصدر (سورس) جديد", systemImage: "plus.circle.fill")
+								Label("إضافة مصدر (سورس) خاص بك", systemImage: "plus.circle.fill")
 									.font(.body.weight(.semibold))
 							}
+						} footer: {
+							Text("جميع المصادر المضافة هنا محمية ولا يمكن تصدير أو نسخ روابطها.")
+								.font(.caption2)
 						}
 						
-						Section("المصادر المضافة") {
-							ForEach(sources) { source in
-								NavigationLink {
-									SourceAppsView(object: [source], viewModel: viewModel)
-								} label: {
-									SourcesCellView(source: source)
+						if !userAddedSourcesOnly.isEmpty {
+							Section("المصادر الإضافية") {
+								ForEach(userAddedSourcesOnly) { source in
+									HStack(spacing: 12) {
+										Image(systemName: "shippingbox.fill")
+											.font(.system(size: 20))
+											.foregroundStyle(.blue)
+											.frame(width: 38, height: 38)
+											.background(Color.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+										
+										VStack(alignment: .leading, spacing: 2) {
+											Text(source.name ?? "مصدر مضاف")
+												.font(.body.weight(.bold))
+												.foregroundStyle(.white)
+											Text("مصدر مفعل • الرابط مخفي للحماية")
+												.font(.caption2)
+												.foregroundStyle(.secondary)
+										}
+										Spacer()
+									}
+									.padding(.vertical, 4)
+									.swipeActions(edge: .trailing, allowsFullSwipe: true) {
+										Button(role: .destructive) {
+											Storage.shared.deleteSource(for: source)
+										} label: {
+											Label("حذف", systemImage: "trash")
+										}
+									}
 								}
 							}
 						}
 					}
-				} else {
-					CertificatesView()
 				}
 			}
 			.toolbar(.hidden, for: .navigationBar)
 			.sheet(isPresented: $isAddingSource) {
-				SourcesAddView()
+				CustomSafeAddSourceSheet()
 			}
 		}
 		.environment(\.layoutDirection, .rightToLeft)
 	}
 }
 
-// MARK: - App Store 2026 UI Components (Translated Subtitles & Authentic Layout)
+// نافذة إضافة سورس نظيفة وآمنة (بدون زر تصدير السورسات نهائياً)
+struct CustomSafeAddSourceSheet: View {
+	@Environment(\.dismiss) private var dismiss
+	@State private var sourceURLText = ""
+	@State private var isSaving = false
+	
+	var body: some View {
+		NavigationStack {
+			Form {
+				Section("رابط المصدر (JSON URL)") {
+					TextField("https://example.com/repo.json", text: $sourceURLText)
+						.keyboardType(.URL)
+						.textInputAutocapitalization(.never)
+						.autocorrectionDisabled()
+				}
+				
+				Section {
+					Button {
+						addSource()
+					} label: {
+						HStack {
+							Spacer()
+							if isSaving {
+								ProgressView()
+							} else {
+								Text("إضافة المصدر")
+									.font(.body.weight(.bold))
+							}
+							Spacer()
+						}
+					}
+					.disabled(sourceURLText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
+				}
+			}
+			.navigationTitle("إضافة مصدر")
+			.navigationBarTitleDisplayMode(.inline)
+			.toolbar {
+				ToolbarItem(placement: .topBarLeading) {
+					Button("إلغاء") {
+						dismiss()
+					}
+				}
+			}
+		}
+		.environment(\.layoutDirection, .rightToLeft)
+	}
+	
+	private func addSource() {
+		let trimmed = sourceURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard URL(string: trimmed) != nil else { return }
+		isSaving = true
+		FR.handleSource(trimmed) {
+			isSaving = false
+			dismiss()
+		}
+	}
+}
+
+// MARK: - Smart App Store Download & Auto-Sign Button
+struct AppStore2026DownloadButton: View {
+	let app: ASRepository.App
+	var useCloudStyle: Bool = false
+	var isLightPill: Bool = false
+	@ObservedObject private var pipeline = AutoSignPipelineManager.shared
+	
+	private var appKey: String {
+		app.id ?? app.currentName
+	}
+	
+	private var currentStage: AutoSignPipelineManager.Stage? {
+		pipeline.activeStates[appKey]
+	}
+	
+	var body: some View {
+		Button {
+			pipeline.downloadAndAutoSign(app: app)
+		} label: {
+			switch currentStage {
+			case .downloading:
+				HStack(spacing: 5) {
+					ProgressView()
+						.tint(.blue)
+						.scaleEffect(0.75)
+					Text("تنزيل...")
+						.font(.system(size: 11, weight: .bold))
+						.foregroundStyle(.blue)
+				}
+				.frame(width: 82, height: 32)
+				.background(Capsule().fill(Color(white: 0.18)))
+				
+			case .signing:
+				HStack(spacing: 5) {
+					ProgressView()
+						.tint(.white)
+						.scaleEffect(0.75)
+					Text("توقيع...")
+						.font(.system(size: 11, weight: .bold))
+						.foregroundStyle(.white)
+				}
+				.frame(width: 82, height: 32)
+				.background(Capsule().fill(Color.blue))
+				
+			case .ready:
+				HStack(spacing: 4) {
+					Image(systemName: "checkmark")
+						.font(.system(size: 11, weight: .bold))
+					Text("تثبيت")
+						.font(.system(size: 13, weight: .bold))
+				}
+				.foregroundStyle(.white)
+				.frame(width: 78, height: 32)
+				.background(Capsule().fill(Color.green))
+				
+			case nil:
+				if useCloudStyle {
+					Image(systemName: "icloud.and.arrow.down")
+						.font(.system(size: 22, weight: .semibold))
+						.foregroundStyle(Color(red: 0.08, green: 0.52, blue: 1.0))
+						.frame(width: 44, height: 36)
+				} else {
+					VStack(spacing: 3) {
+						Text("تنزيل")
+							.font(.system(size: 15, weight: .bold))
+							.foregroundStyle(isLightPill ? .white : Color(red: 0.10, green: 0.54, blue: 1.0))
+							.frame(width: 78, height: 32)
+							.background(
+								Capsule(style: .continuous)
+									.fill(isLightPill ? Color.white.opacity(0.28) : Color(white: 0.18))
+							)
+						
+						if !isLightPill {
+							Text("توقيع تلقائي")
+								.font(.system(size: 8, weight: .medium))
+								.foregroundStyle(.secondary)
+								.lineLimit(1)
+						}
+					}
+				}
+			}
+		}
+		.buttonStyle(.plain)
+	}
+}
+
+// MARK: - App Store 2026 Visual Cards
 
 struct Today2026HeroCard: View {
 	let item: AppStoreAppItem
@@ -1613,55 +1899,6 @@ struct AppStore2026BrowseCategoryTile: View {
 	}
 }
 
-struct AppStore2026DownloadButton: View {
-	let app: ASRepository.App
-	var useCloudStyle: Bool = false
-	var isLightPill: Bool = false
-	@State private var isDownloading = false
-	
-	var body: some View {
-		Button {
-			guard let url = app.currentDownloadUrl else { return }
-			UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-			isDownloading = true
-			_ = DownloadManager.shared.startDownload(from: url)
-			DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-				isDownloading = false
-			}
-		} label: {
-			if isDownloading {
-				ProgressView()
-					.tint(.blue)
-					.frame(width: 74, height: 34)
-			} else if useCloudStyle {
-				Image(systemName: "icloud.and.arrow.down")
-					.font(.system(size: 22, weight: .semibold))
-					.foregroundStyle(Color(red: 0.08, green: 0.52, blue: 1.0))
-					.frame(width: 44, height: 36)
-			} else {
-				VStack(spacing: 3) {
-					Text("تنزيل")
-						.font(.system(size: 15, weight: .bold))
-						.foregroundStyle(isLightPill ? .white : Color(red: 0.10, green: 0.54, blue: 1.0))
-						.frame(width: 78, height: 32)
-						.background(
-							Capsule(style: .continuous)
-								.fill(isLightPill ? Color.white.opacity(0.28) : Color(white: 0.18))
-						)
-					
-					if !isLightPill {
-						Text("الشراء داخل التطبيق")
-							.font(.system(size: 8, weight: .medium))
-							.foregroundStyle(.secondary)
-							.lineLimit(1)
-					}
-				}
-			}
-		}
-		.buttonStyle(.plain)
-	}
-}
-
 struct AppStore2026ThreeRowSection: View {
 	let title: String
 	let subtitle: String
@@ -1887,28 +2124,20 @@ struct AppStore2026EmptyState: View {
 				ProgressView()
 					.tint(.white)
 					.scaleEffect(1.3)
-				Text("جاري جلب التطبيقات والألعاب...")
+				Text("جاري تحميل المتجر والتطبيقات...")
 					.font(.subheadline)
 					.foregroundStyle(.secondary)
 			} else {
 				Image(systemName: "bag.badge.plus")
 					.font(.system(size: 46))
 					.foregroundStyle(.blue)
-				Text("المتجر جاهز لإضافة مصادرك")
+				Text("جاري تجهيز المتجر")
 					.font(.title3.weight(.bold))
 					.foregroundStyle(.white)
-				Text("اضغط على + في الأعلى لإضافة سورس (Repo) وعرض جميع تطبيقاته.")
+				Text("اسحب الشاشة للأسفل لتحديث التطبيقات أو أضف مصدراً إضافياً.")
 					.font(.subheadline)
 					.foregroundStyle(.secondary)
 					.multilineTextAlignment(.center)
-				Button(action: onAddSource) {
-					Text("إضافة مصدر الآن")
-						.font(.subheadline.weight(.bold))
-						.foregroundStyle(.white)
-						.padding(.horizontal, 24)
-						.padding(.vertical, 12)
-						.background(Color.blue, in: Capsule())
-				}
 			}
 		}
 		.frame(maxWidth: .infinity)
