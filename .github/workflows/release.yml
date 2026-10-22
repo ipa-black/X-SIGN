@@ -8,126 +8,66 @@ on:
       - v*
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: write
 
-env:
-  DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
-
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
-      - name: 1. Maximize System Performance & File Limits
-        run: |
-          # رفع القيود عن السيرفر بالكامل لمنع اختناق العمليات التفرعية
-          sudo sysctl -w kern.maxfiles=10485760
-          sudo sysctl -w kern.maxfilesperproc=1048576
-          ulimit -n 65536
-
-      - name: 2. Checkout Repository with Submodules
+      - name: 1. Checkout Repository
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
           fetch-depth: 0
 
-      - name: 3. Setup Xcode Environment
+      - name: 2. Select Xcode 26
         run: |
-          # فحص واختيار أحدث وأقوى نسخة مستقرة تدعم معمارية iOS الحديثة
-          if [ -d "/Applications/Xcode_16.2.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.2.app
-          elif [ -d "/Applications/Xcode_16.1.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.1.app
-          elif [ -d "/Applications/Xcode_16.0.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.0.app
-          elif [ -d "/Applications/Xcode_15.4.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_15.4.app
+          if [ -d "/Applications/Xcode_26.3.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.3.0.app
+          elif [ -d "/Applications/Xcode_26.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.app
           fi
-          echo "Selected Xcode:"
           xcodebuild -version
 
-      - name: 4. Nuclear Cleanup (Eliminate SwiftPM & IDE Conflicts)
+      - name: 3. Clear Caches
         run: |
-          # تفريغ كاش SwiftPM المسبب الرئيسي لخطأ NSMutableArray insertObjects
           rm -rf ~/Library/Caches/org.swift.swiftpm
-          rm -rf ~/Library/org.swift.swiftpm
           rm -rf ~/Library/Developer/Xcode/DerivedData
-          
-          # إزالة ملفات الكاش القديمة داخل المشروع إن وجدت
-          find . -name ".build" -exec rm -rf {} + 2>/dev/null || true
-          find . -name "Package.resolved" -exec rm -rf {} + 2>/dev/null || true
 
-      - name: 5. Patch Makefile to Modern Standards
+      - name: 4. Build
         run: |
-          # تصحيح ملف Makefile:
-          # 1) استبدال xcodeproj بـ xcworkspace لمنع انهيار xcodebuild
-          # 2) تعطيل تشغيل البلاجنز المقيدة
-          # 3) إضافة علم منع الكاش التالف
-          if [ -f "Makefile" ]; then
-            sed -i '' 's/-project Feather.xcodeproj/-workspace Feather.xcworkspace/g' Makefile || true
-            sed -i '' 's/-project X-SIGN.xcodeproj/-workspace X-SIGN.xcworkspace/g' Makefile || true
-          fi
-
-      - name: 6. Build Project with Maximum Hardware Power
-        run: |
-          # استغلال كافة معالجات الماك بالتوازي (-parallelizeTargets)
-          export CLT_CORES=$(sysctl -n hw.ncpu)
-          echo "Building using $CLT_CORES CPU Cores..."
-          
           agvtool new-version -all $(git rev-parse HEAD) || true
-          
-          # تشغيل make مع تجاوز أخطاء التوقيع المحلي وإتاحة مسار الإخراج
-          make -j$CLT_CORES || make
+          make
 
-      - name: 7. Verify and Package IPA
+      - name: 5. Get Version & Package IPA
         run: |
           mkdir -p output_artifacts
-          
-          # استخراج إصدار التطبيق بدقة
           if [ -d "_build/Payload" ]; then
-            APP_NAME=$(ls _build/Payload | head -n 1)
-            VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "_build/Payload/${APP_NAME}/Info.plist" 2>/dev/null || echo "1.0")
+            VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" _build/Payload/*.app/Info.plist 2>/dev/null || echo "1.0")
             echo "APP_VERSION=${VERSION}" >> $GITHUB_ENV
-            
-            # ضغط مجلد Payload مباشرة إلى ملف IPA نظيف
             cd _build
             zip -qry9 ../output_artifacts/X-SIGN-v${VERSION}.ipa Payload
             cd ..
           elif ls packages/*.ipa 1> /dev/null 2>&1; then
             cp packages/*.ipa output_artifacts/
             echo "APP_VERSION=1.0" >> $GITHUB_ENV
-          else
-            echo "Searching for built application..."
-            find /var/folders -name "*.app" -path "*/Release-iphoneos/*" -exec dirname {} \; | while read path; do
-              mkdir -p Payload
-              cp -R "$path" Payload/
-              zip -qry9 output_artifacts/X-SIGN-Compiled.ipa Payload
-              rm -rf Payload
-            done
           fi
 
-      - name: 8. Upload IPA as GitHub Artifact
+      - name: 6. Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: X-SIGN-Application
           path: output_artifacts/*.ipa
-          if-no-files-found: error
-          retention-days: 14
 
-      - name: 9. Publish Official Release
+      - name: 7. Create Release
         uses: softprops/action-gh-release@v2
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
         with:
-          name: X-SIGN v${{ env.APP_VERSION || github.run_number }}
+          name: X-SIGN v${{ env.APP_VERSION || '1.0' }}
           tag_name: v${{ env.APP_VERSION || '1.0' }}.${{ github.run_number }}
           files: |
             output_artifacts/*.ipa
-          generate_release_notes: true
-          fail_on_unmatched_files: false
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
