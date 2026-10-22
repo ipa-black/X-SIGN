@@ -1,6 +1,6 @@
-NAME := Feather
+NAME := X-SIGN
 SCHEME := Feather
-PLATFORMS := iphoneos maccatalyst
+PLATFORMS := iphoneos
 
 TMP := $(TMPDIR)/$(NAME)
 CERT_JSON_URL := https://backloop.dev/pack.json
@@ -12,7 +12,7 @@ all: $(PLATFORMS)
 clean:
 	rm -rf $(TMP)
 	rm -rf packages
-	rm -rf Payload
+	rm -rf _build
 
 deps:
 	rm -rf deps || true
@@ -23,35 +23,24 @@ deps:
 	jq -r '.key1, .key2' cert.json > deps/server.pem
 	jq -r '.info.domains.commonName' cert.json > deps/commonName.txt
 
-
 $(PLATFORMS): deps
 	rm -rf _build
 
-	@if [ "$@" = "iphoneos" ]; then \
-		DEST="generic/platform=iOS"; \
-	else \
-		DEST="generic/platform=macOS,variant=Mac Catalyst"; \
-	fi; \
 	xcodebuild \
-		-project Feather.xcodeproj \
+		-workspace Feather.xcworkspace \
 		-scheme $(SCHEME) \
 		-configuration Release \
-		-destination "$$DEST" \
+		-destination "generic/platform=iOS" \
 		-derivedDataPath $(TMP)/$@ \
 		-skipPackagePluginValidation \
 		CODE_SIGNING_ALLOWED=NO \
 		ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO
 
 	mkdir -p _build/Payload
-	cp -R _build/Applications/*.app _build/Payload/Feather.app
-	chmod -R 0755 _build/Payload/Feather.app
-	codesign --force --sign - --timestamp=none _build/Payload/Feather.app
-	cp deps/* _build/Payload/Feather.app/ || true
+	cp -R _build/Applications/*.app _build/Payload/$(NAME).app || cp -R $(TMP)/$@/Build/Products/Release-iphoneos/*.app _build/Payload/$(NAME).app
+	chmod -R 0755 _build/Payload/$(NAME).app
+	codesign --force --sign - --timestamp=none _build/Payload/$(NAME).app || true
+	cp deps/* _build/Payload/$(NAME).app/ || true
 
 	mkdir -p packages
-
-	@if [ "$@" = "iphoneos" ]; then \
-		ditto -c -k --sequesterRsrc --keepParent _build/Payload "packages/Feather.ipa"; \
-	else \
-		ditto -c -k --sequesterRsrc --keepParent _build/Payload/Feather.app "packages/Feather_Catalyst.zip"; \
-	fi
+	ditto -c -k --sequesterRsrc --keepParent _build/Payload "packages/$(NAME).ipa"
