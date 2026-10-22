@@ -8,34 +8,18 @@
 import SwiftUI
 
 struct TabbarView: View {
-	@Binding var selectedTab: TabEnum
-	
-	// تهيئة افتراضية لمنع أي خطأ في الملفات الأخرى التي تستدعي TabbarView() بدون وسائط
-	init(selectedTab: Binding<TabEnum> = .constant(.today)) {
-		self._selectedTab = selectedTab
-	}
+	@State private var selectedTab: TabEnum = .today
 	
 	var body: some View {
-		HStack {
-			ForEach(TabEnum.defaultTabs, id: \.self) { tab in
-				Spacer()
-				Button {
-					selectedTab = tab
-					UIImpactFeedbackGenerator(style: .light).impactOccurred()
-				} label: {
-					VStack(spacing: 4) {
-						Image(systemName: tab.icon)
-							.font(.system(size: 20, weight: selectedTab == tab ? .bold : .regular))
-						Text(tab.title)
-							.font(.system(size: 10, weight: selectedTab == tab ? .bold : .medium))
+		TabView(selection: $selectedTab) {
+			ForEach(TabEnum.defaultTabs, id: \.hashValue) { tab in
+				TabEnum.view(for: tab)
+					.tabItem {
+						Label(tab.title, systemImage: tab.icon)
 					}
-					.foregroundStyle(selectedTab == tab ? Color.accentColor : Color.secondary)
-				}
-				.buttonStyle(.plain)
-				Spacer()
+					.tag(tab)
 			}
 		}
-		.padding(.vertical, 8)
-		.background(.ultraThinMaterial)
+		.environment(\.layoutDirection, .rightToLeft)
 	}
 }
