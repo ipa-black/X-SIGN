@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import CoreData
 import Nuke
 import IDeviceSwift
 import OSLog
@@ -19,17 +20,31 @@ struct FeatherApp: App {
 	@StateObject var downloadManager = DownloadManager.shared
 	let storage = Storage.shared
 	
+	@State private var _showSplash = true
+	
 	var body: some Scene {
 		WindowGroup {
-			VStack {
-				DownloadHeaderView(downloadManager: downloadManager)
-					.transition(.move(edge: .top).combined(with: .opacity))
-				VariedTabbarView()
-					.environment(\.managedObjectContext, storage.context)
-					.onOpenURL(perform: _handleURL)
-					.transition(.move(edge: .top).combined(with: .opacity))
+			ZStack {
+				VStack {
+					DownloadHeaderView(downloadManager: downloadManager)
+						.transition(.move(edge: .top).combined(with: .opacity))
+					VariedTabbarView()
+						.environment(\.managedObjectContext, storage.context)
+						.onOpenURL(perform: _handleURL)
+						.transition(.move(edge: .top).combined(with: .opacity))
+				}
+				.animation(.smooth, value: downloadManager.manualDownloads.description)
+				
+				if _showSplash {
+					XSignLaunchSplashView {
+						withAnimation(.easeInOut(duration: 0.6)) {
+							_showSplash = false
+						}
+					}
+					.transition(.opacity)
+					.zIndex(999)
+				}
 			}
-			.animation(.smooth, value: downloadManager.manualDownloads.description)
 			.onReceive(NotificationCenter.default.publisher(for: .heartbeatInvalidHost)) { _ in
 				DispatchQueue.main.async {
 					UIAlertController.showAlertWithOk(
@@ -38,7 +53,6 @@ struct FeatherApp: App {
 					)
 				}
 			}
-			// dear god help me
 			.onAppear {
 				if let style = UIUserInterfaceStyle(rawValue: UserDefaults.standard.integer(forKey: "Feather.userInterfaceStyle")) {
 					UIApplication.topViewController()?.view.window?.overrideUserInterfaceStyle = style
@@ -51,7 +65,6 @@ struct FeatherApp: App {
 	
 	private func _handleURL(_ url: URL) {
 		if url.scheme == "feather" {
-			/// feather://import-certificate?p12=<base64>&mobileprovision=<base64>&password=<base64>
 			if url.host == "import-certificate" {
 				guard
 					let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -100,11 +113,6 @@ struct FeatherApp: App {
 				
 				return
 			}
-			/// feather://export-certificate?callback_template=<template>
-			/// ?callback_template=: This is how we callback to the application requesting the certificate, this will be a url scheme
-			/// 	example: livecontainer%3A%2F%2Fcertificate%3Fcert%3D%24%28BASE64_CERT%29%26password%3D%24%28PASSWORD%29
-			/// 	decoded: livecontainer://certificate?cert=$(BASE64_CERT)&password=$(PASSWORD)
-			/// $(BASE64_CERT) and $(PASSWORD) must be presenting in the callback template so we can replace them with the proper content
 			if url.host == "export-certificate" {
 				guard
 					let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -117,11 +125,9 @@ struct FeatherApp: App {
 				
 				FR.exportCertificateAndOpenUrl(using: callbackTemplate)
 			}
-			/// feather://source/<url>
 			if let fullPath = url.validatedScheme(after: "/source/") {
 				FR.handleSource(fullPath) { }
 			}
-			/// feather://install/<url.ipa>
 			if
 				let fullPath = url.validatedScheme(after: "/install/"),
 				let downloadURL = URL(string: fullPath)
@@ -151,6 +157,101 @@ struct FeatherApp: App {
 	}
 }
 
+// MARK: - Slow-Drawing "X" Splash Screen while Apps Load in Background
+struct XLetterShape: Shape {
+	func path(in rect: CGRect) -> Path {
+		var path = Path()
+		let inset: CGFloat = rect.width * 0.14
+		path.move(to: CGPoint(x: inset, y: inset))
+		path.addLine(to: CGPoint(x: rect.width - inset, y: rect.height - inset))
+		path.move(to: CGPoint(x: rect.width - inset, y: inset))
+		path.addLine(to: CGPoint(x: inset, y: rect.height - inset))
+		return path
+	}
+}
+
+struct XSignLaunchSplashView: View {
+	var onFinished: () -> Void
+	
+	@State private var drawProgress: CGFloat = 0.0
+	@State private var glowOpacity: Double = 0.0
+	@State private var subtitleOpacity: Double = 0.0
+	@State private var scaleEffectValue: CGFloat = 0.90
+	
+	var body: some View {
+		ZStack {
+			Color.black.ignoresSafeArea()
+			
+			Circle()
+				.fill(
+					RadialGradient(
+						colors: [Color.blue.opacity(0.28), Color.indigo.opacity(0.10), .clear],
+						center: .center,
+						startRadius: 10,
+						endRadius: 190
+					)
+				)
+				.frame(width: 350, height: 350)
+				.opacity(glowOpacity)
+			
+			VStack(spacing: 28) {
+				ZStack {
+					XLetterShape()
+						.stroke(
+							Color.white.opacity(0.08),
+							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
+						)
+						.frame(width: 132, height: 132)
+					
+					XLetterShape()
+						.trim(from: 0.0, to: drawProgress)
+						.stroke(
+							LinearGradient(
+								colors: [
+									Color.white,
+									Color(red: 0.35, green: 0.68, blue: 1.0),
+									Color(red: 0.18, green: 0.42, blue: 0.98)
+								],
+								startPoint: .topLeading,
+								endPoint: .bottomTrailing
+							),
+							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
+						)
+						.frame(width: 132, height: 132)
+						.shadow(color: Color.blue.opacity(0.65), radius: 16, x: 0, y: 0)
+				}
+				.scaleEffect(scaleEffectValue)
+				
+				VStack(spacing: 8) {
+					Text("X-SIGN")
+						.font(.system(size: 22, weight: .heavy, design: .rounded))
+						.tracking(4)
+						.foregroundStyle(.white)
+					
+					Text("جاري تحميل المتجر والتطبيقات...")
+						.font(.system(size: 13, weight: .medium))
+						.foregroundStyle(.secondary)
+				}
+				.opacity(subtitleOpacity)
+			}
+		}
+		.onAppear {
+			// رسم بطيء لحرف X يستغرق 2.8 ثانية حتى تكتمل قراءة السورسات في الخلفية
+			withAnimation(.easeInOut(duration: 2.8)) {
+				drawProgress = 1.0
+				scaleEffectValue = 1.0
+			}
+			withAnimation(.easeIn(duration: 1.2).delay(0.3)) {
+				glowOpacity = 1.0
+				subtitleOpacity = 1.0
+			}
+			DispatchQueue.main.asyncAfter(deadline: .now() + 3.3) {
+				onFinished()
+			}
+		}
+	}
+}
+
 class AppDelegate: NSObject, UIApplicationDelegate {
 	func application(
 		_ application: UIApplication,
@@ -160,6 +261,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		_createDocumentsDirectories()
 		ResetView.clearWorkCache()
 		_addDefaultCertificates()
+		_configureProtectedCoreSources()
 		return true
 	}
 	
@@ -172,8 +274,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				config.urlCache = nil
 				return DataLoader(configuration: config)
 			}()
-			let dataCache = try? DataCache(name: "thewonderofyou.Feather.datacache") // disk cache
-			let imageCache = Nuke.ImageCache() // memory cache
+			let dataCache = try? DataCache(name: "thewonderofyou.Feather.datacache")
+			let imageCache = Nuke.ImageCache()
 			dataCache?.sizeLimit = 500 * 1024 * 1024
 			imageCache.costLimit = 100 * 1024 * 1024
 			$0.dataCache = dataCache
@@ -198,6 +300,49 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		
 		for url in directories {
 			try? fileManager.createDirectoryIfNeeded(at: url)
+		}
+	}
+	
+	private func _configureProtectedCoreSources() {
+		let context = Storage.shared.context
+		context.perform {
+			let request = NSFetchRequest<AltSource>(entityName: "AltSource")
+			let existingSources = (try? context.fetch(request)) ?? []
+			
+			// 1. حذف أي سورسات افتراضية قديمة كانت تأتي مع Feather الأصلي
+			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v1"
+			if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
+				for source in existingSources {
+					let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
+					if !urlStr.contains("apptesters") && !urlStr.contains("ipablack") {
+						context.delete(source)
+					}
+				}
+				UserDefaults.standard.set(true, forKey: purgedOnceKey)
+			}
+			
+			// 2. حقن السورسين الأساسيين (AppTesters + IPABLACK) بشكل مخفي ومحمي
+			let coreRepos: [(name: String, id: String, url: String)] = [
+				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"),
+				("AppTesters", "xsign.core.apptesters", "https://repo.apptesters.org/")
+			]
+			
+			let updatedExisting = (try? context.fetch(request)) ?? []
+			for repo in coreRepos {
+				guard let repoURL = URL(string: repo.url) else { continue }
+				let alreadyExists = updatedExisting.contains {
+					$0.sourceURL?.absoluteString.lowercased() == repo.url.lowercased() ||
+					$0.identifier == repo.id
+				}
+				if !alreadyExists {
+					let newSource = AltSource(context: context)
+					newSource.name = repo.name
+					newSource.identifier = repo.id
+					newSource.sourceURL = repoURL
+				}
+			}
+			
+			try? context.save()
 		}
 	}
 	
@@ -251,5 +396,4 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			Logger.misc.error("Failed to list signing-assets: \(error)")
 		}
 	}
-
 }
