@@ -10,6 +10,11 @@ import SwiftUI
 struct TabbarView: View {
 	@Binding var selectedTab: TabEnum
 	
+	// تهيئة افتراضية لمنع أي خطأ في الملفات الأخرى التي تستدعي TabbarView() بدون وسائط
+	init(selectedTab: Binding<TabEnum> = .constant(.today)) {
+		self._selectedTab = selectedTab
+	}
+	
 	var body: some View {
 		HStack {
 			ForEach(TabEnum.defaultTabs, id: \.self) { tab in
