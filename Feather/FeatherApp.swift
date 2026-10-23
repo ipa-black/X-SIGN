@@ -18,14 +18,21 @@ struct FeatherApp: App {
 	let heartbeat = HeartbeatManager.shared
 	
 	@StateObject var downloadManager = DownloadManager.shared
+	@StateObject private var storeCache = AppStoreCacheManager.shared
+	@StateObject private var sourcesViewModel = SourcesViewModel.shared
 	let storage = Storage.shared
 	
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	@State private var _showSplash = true
+	
+	private var activeTintColor: Color {
+		Color(hex: userTintHex)
+	}
 	
 	var body: some Scene {
 		WindowGroup {
 			ZStack {
-				VStack {
+				VStack(spacing: 0) {
 					DownloadHeaderView(downloadManager: downloadManager)
 						.transition(.move(edge: .top).combined(with: .opacity))
 					VariedTabbarView()
@@ -33,17 +40,26 @@ struct FeatherApp: App {
 						.onOpenURL(perform: _handleURL)
 						.transition(.move(edge: .top).combined(with: .opacity))
 				}
+				.tint(activeTintColor)
+				.accentColor(activeTintColor)
 				.animation(.smooth, value: downloadManager.manualDownloads.description)
 				
 				if _showSplash {
-					XSignLaunchSplashView {
-						withAnimation(.easeInOut(duration: 0.6)) {
+					XSignLaunchSplashView(
+						cache: storeCache,
+						sourcesViewModel: sourcesViewModel
+					) {
+						withAnimation(.easeInOut(duration: 0.55)) {
 							_showSplash = false
 						}
 					}
 					.transition(.opacity)
 					.zIndex(999)
 				}
+			}
+			.preferredColorScheme(.dark)
+			.onChange(of: userTintHex) { newHex in
+				UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: newHex))
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .heartbeatInvalidHost)) { _ in
 				DispatchQueue.main.async {
@@ -54,11 +70,13 @@ struct FeatherApp: App {
 				}
 			}
 			.onAppear {
+				if UserDefaults.standard.string(forKey: "Feather.userTintColor") == nil {
+					UserDefaults.standard.set("#005BBB", forKey: "Feather.userTintColor")
+				}
 				if let style = UIUserInterfaceStyle(rawValue: UserDefaults.standard.integer(forKey: "Feather.userInterfaceStyle")) {
 					UIApplication.topViewController()?.view.window?.overrideUserInterfaceStyle = style
 				}
-				
-				UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: UserDefaults.standard.string(forKey: "Feather.userTintColor") ?? "#848ef9"))
+				UIApplication.topViewController()?.view.window?.tintColor = UIColor(activeTintColor)
 			}
 		}
 	}
@@ -157,91 +175,182 @@ struct FeatherApp: App {
 	}
 }
 
-// MARK: - 3D Professional Slow-Drawing "X" Splash Screen
-struct XLetterShape: Shape {
+// MARK: - Pure 3D White "X" Splash Screen (Stays Until Apps Are Loaded)
+struct X3DRibbonShape: Shape {
+	let firstStroke: Bool
+	
 	func path(in rect: CGRect) -> Path {
 		var path = Path()
-		let inset: CGFloat = rect.width * 0.15
-		path.move(to: CGPoint(x: inset, y: inset))
-		path.addLine(to: CGPoint(x: rect.width - inset, y: rect.height - inset))
-		path.move(to: CGPoint(x: rect.width - inset, y: inset))
-		path.addLine(to: CGPoint(x: inset, y: rect.height - inset))
+		let inset: CGFloat = rect.width * 0.14
+		if firstStroke {
+			path.move(to: CGPoint(x: inset, y: inset))
+			path.addLine(to: CGPoint(x: rect.width - inset, y: rect.height - inset))
+		} else {
+			path.move(to: CGPoint(x: rect.width - inset, y: inset))
+			path.addLine(to: CGPoint(x: inset, y: rect.height - inset))
+		}
 		return path
 	}
 }
 
 struct XSignLaunchSplashView: View {
+	@ObservedObject var cache: AppStoreCacheManager
+	@ObservedObject var sourcesViewModel: SourcesViewModel
 	var onFinished: () -> Void
 	
-	@State private var drawProgress: CGFloat = 0.0
-	@State private var glowOpacity: Double = 0.0
-	@State private var scaleEffectValue: CGFloat = 0.85
+	@FetchRequest(
+		entity: AltSource.entity(),
+		sortDescriptors: [NSSortDescriptor(keyPath: \AltSource.name, ascending: true)]
+	) private var _sources: FetchedResults<AltSource>
+	
+	@State private var strokeOneProgress: CGFloat = 0.0
+	@State private var strokeTwoProgress: CGFloat = 0.0
+	@State private var depthTilt: Double = 14.0
+	@State private var scaleValue: CGFloat = 0.86
+	@State private var glowIntensity: Double = 0.2
+	@State private var didFinishMinimumAnimation = false
+	@State private var didDismiss = false
 	
 	var body: some View {
 		ZStack {
 			Color.black.ignoresSafeArea()
 			
-			// إضاءة خلفية 3D عميقة متوهجة
+			// هالة محيطية ناعمة جداً خلف المجسم ثلاثي الأبعاد
 			Circle()
 				.fill(
 					RadialGradient(
-						colors: [Color.white.opacity(0.18), Color.blue.opacity(0.12), .clear],
+						colors: [
+							Color.white.opacity(0.14 * glowIntensity),
+							Color(red: 0.0, green: 0.36, blue: 0.73).opacity(0.18 * glowIntensity),
+							.clear
+						],
 						center: .center,
-						startRadius: 5,
-						endRadius: 210
+						startRadius: 4,
+						endRadius: 200
 					)
 				)
-				.frame(width: 380, height: 380)
-				.opacity(glowOpacity)
+				.frame(width: 360, height: 360)
 			
 			ZStack {
-				// طبقة الظل السفلي لإعطاء مظهر 3D بارز
-				XLetterShape()
-					.trim(from: 0.0, to: drawProgress)
-					.stroke(
-						Color.blue.opacity(0.5),
-						style: StrokeStyle(lineWidth: 22, lineCap: .round, lineJoin: .round)
-					)
-					.frame(width: 140, height: 140)
-					.blur(radius: 8)
-					.offset(x: 0, y: 4)
+				// 1. طبقة العمق الخلفي 3D Extrusion
+				ZStack {
+					X3DRibbonShape(firstStroke: true)
+						.trim(from: 0, to: strokeOneProgress)
+						.stroke(
+							Color(white: 0.22),
+							style: StrokeStyle(lineWidth: 24, lineCap: .round)
+						)
+					X3DRibbonShape(firstStroke: false)
+						.trim(from: 0, to: strokeTwoProgress)
+						.stroke(
+							Color(white: 0.22),
+							style: StrokeStyle(lineWidth: 24, lineCap: .round)
+						)
+				}
+				.frame(width: 148, height: 148)
+				.offset(x: 5, y: 7)
+				.blur(radius: 3)
 				
-				// المسار الخلفي الخافت
-				XLetterShape()
-					.stroke(
-						Color.white.opacity(0.06),
-						style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
-					)
-					.frame(width: 140, height: 140)
-				
-				// حرف X الرئيسي الأبيض الناصع بتصميم 3D
-				XLetterShape()
-					.trim(from: 0.0, to: drawProgress)
+				// 2. الضلع الأول من حرف X بتدرج ثلاثي الأبعاد أبيض ناصع
+				X3DRibbonShape(firstStroke: true)
+					.trim(from: 0, to: strokeOneProgress)
 					.stroke(
 						LinearGradient(
-							colors: [.white, Color(white: 0.82), .white],
+							colors: [
+								Color.white,
+								Color(white: 0.88),
+								Color.white
+							],
 							startPoint: .topLeading,
 							endPoint: .bottomTrailing
 						),
-						style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
+						style: StrokeStyle(lineWidth: 20, lineCap: .round)
 					)
-					.frame(width: 140, height: 140)
-					.shadow(color: Color.white.opacity(0.8), radius: 12, x: 0, y: 0)
+					.frame(width: 148, height: 148)
+					.shadow(color: .black.opacity(0.65), radius: 8, x: 3, y: 5)
+				
+				// 3. الضلع الثاني المتقاطع فوقه بلمعة 3D وظل واقعي عند نقطة التقاطع
+				X3DRibbonShape(firstStroke: false)
+					.trim(from: 0, to: strokeTwoProgress)
+					.stroke(
+						LinearGradient(
+							colors: [
+								Color.white,
+								Color(white: 0.94),
+								Color(white: 0.82),
+								Color.white
+							],
+							startPoint: .topTrailing,
+							endPoint: .bottomLeading
+						),
+						style: StrokeStyle(lineWidth: 20, lineCap: .round)
+					)
+					.frame(width: 148, height: 148)
+					.shadow(color: .black.opacity(0.75), radius: 10, x: -2, y: 4)
+					.shadow(color: .white.opacity(0.55 * glowIntensity), radius: 16, x: 0, y: 0)
 			}
-			.scaleEffect(scaleEffectValue)
+			.rotation3DEffect(
+				.degrees(depthTilt),
+				axis: (x: 0.25, y: -0.35, z: 0.0),
+				perspective: 0.45
+			)
+			.scaleEffect(scaleValue)
+		}
+		.task {
+			// بدء تحميل السورسات والتطبيقات فوراً أثناء رسم حرف X
+			await cache.ensureFetched(sources: _sources, viewModel: sourcesViewModel)
+			checkIfReadyToDismiss()
+		}
+		.onChange(of: cache.allCombinedItems.count) { _ in
+			checkIfReadyToDismiss()
 		}
 		.onAppear {
-			withAnimation(.easeInOut(duration: 2.8)) {
-				drawProgress = 1.0
-				scaleEffectValue = 1.0
-			}
-			withAnimation(.easeIn(duration: 1.2).delay(0.2)) {
-				glowOpacity = 1.0
-			}
-			DispatchQueue.main.asyncAfter(deadline: .now() + 3.3) {
-				onFinished()
+			startSlow3DDrawing()
+		}
+	}
+	
+	private func startSlow3DDrawing() {
+		// رسم الضلع الأول ببطء
+		withAnimation(.easeInOut(duration: 1.35)) {
+			strokeOneProgress = 1.0
+			scaleValue = 0.95
+		}
+		// رسم الضلع الثاني فوقه ببطء مع اعتدال زاوية الـ 3D
+		withAnimation(.easeInOut(duration: 1.45).delay(1.15)) {
+			strokeTwoProgress = 1.0
+			depthTilt = 0.0
+			scaleValue = 1.0
+			glowIntensity = 1.0
+		}
+		
+		// نبض 3D هادئ في حال استغرق الإنترنت ثواني إضافية لتحميل التطبيقات
+		DispatchQueue.main.asyncAfter(deadline: .now() + 2.65) {
+			didFinishMinimumAnimation = true
+			checkIfReadyToDismiss()
+			
+			withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+				glowIntensity = 0.45
+				scaleValue = 0.97
 			}
 		}
+		
+		// حد أقصى للأمان (6.5 ثانية) حتى يفتح التطبيق لو كان الجهاز بدون إنترنت
+		DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) {
+			dismissSplash()
+		}
+	}
+	
+	private func checkIfReadyToDismiss() {
+		guard didFinishMinimumAnimation else { return }
+		if !cache.ipablackItems.isEmpty || !cache.allCombinedItems.isEmpty {
+			dismissSplash()
+		}
+	}
+	
+	private func dismissSplash() {
+		guard !didDismiss else { return }
+		didDismiss = true
+		onFinished()
 	}
 }
 
@@ -302,7 +411,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			let request = NSFetchRequest<AltSource>(entityName: "AltSource")
 			let existingSources = (try? context.fetch(request)) ?? []
 			
-			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v2"
+			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v3"
 			if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
 				for source in existingSources {
 					let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
