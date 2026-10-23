@@ -13,12 +13,32 @@ import NukeUI
 import Nuke
 import UIKit
 
+// MARK: - Dynamic Visual Identity (White, Black, Ocean Blue + Settings Tint)
+enum AppStoreTheme {
+	static let oceanBlue = Color(red: 0.00, green: 0.36, blue: 0.73) // #005BBB
+	static let deepOcean = Color(red: 0.02, green: 0.16, blue: 0.36) // #05295C
+	static let pureBlack = Color.black
+	static let cardSurface = Color(red: 0.10, green: 0.11, blue: 0.13)
+	
+	static var dynamicAccent: Color {
+		let hex = UserDefaults.standard.string(forKey: "Feather.userTintColor") ?? "#005BBB"
+		return Color(hex: hex)
+	}
+}
+
+// MARK: - Protected Sources Vault
 enum ProtectedSourcesVault {
 	static let coreURLs: [String] = [
 		"https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json",
 		"https://repository.apptesters.org/",
 		"https://repo.apptesters.org/"
 	]
+	
+	static func isIPABlackSource(_ sourceURL: URL?, identifier: String? = nil) -> Bool {
+		let urlStr = sourceURL?.absoluteString.lowercased() ?? ""
+		let idStr = identifier?.lowercased() ?? ""
+		return urlStr.contains("ipablack") || idStr.contains("ipablack")
+	}
 	
 	static func isHiddenCoreSource(_ source: AltSource) -> Bool {
 		let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
@@ -29,6 +49,7 @@ enum ProtectedSourcesVault {
 	}
 }
 
+// MARK: - Bilingual Search & Localization Engine
 enum AppStoreBilingualEngine {
 	static let synonymGroups: [[String]] = [
 		["instagram", "insta", "ig", "rocket", "plus", "bhinsta", "انستقرام", "انستا", "انستجرام", "إنستجرام", "انستغرام", "إنستغرام"],
@@ -215,6 +236,17 @@ struct AppStoreAppItem: Identifiable, Hashable {
 	}
 }
 
+// MARK: - Editorial Instruction Model (Parsed Exclusively from IPA BLACK Source)
+struct TodayEditorialInstruction: Identifiable {
+	let id: String
+	let badge: String
+	let title: String
+	let caption: String
+	let imageURL: URL?
+	let tintColor: Color
+	let associatedApp: AppStoreAppItem?
+}
+
 enum AppStore2026Category: String, CaseIterable, Identifiable {
 	case topApps = "التطبيقات الأكثر تنزيلاً"
 	case topGames = "الألعاب الأكثر تنزيلاً"
@@ -287,7 +319,7 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 	var gradientColors: [Color] {
 		switch self {
 		case .topApps:
-			return [Color(red: 0.44, green: 0.69, blue: 0.98), Color(red: 0.32, green: 0.56, blue: 0.92)]
+			return [Color(red: 0.04, green: 0.45, blue: 0.85), Color(red: 0.02, green: 0.25, blue: 0.58)]
 		case .topGames:
 			return [Color(red: 0.96, green: 0.69, blue: 0.45), Color(red: 0.92, green: 0.53, blue: 0.31)]
 		case .bestSellingApps:
@@ -299,7 +331,7 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 		case .simulationGames:
 			return [Color(red: 0.55, green: 0.84, blue: 0.68), Color(red: 0.40, green: 0.72, blue: 0.54)]
 		case .social:
-			return [Color(red: 0.68, green: 0.62, blue: 0.97), Color(red: 0.53, green: 0.45, blue: 0.93)]
+			return [Color(red: 0.08, green: 0.52, blue: 0.92), Color(red: 0.04, green: 0.32, blue: 0.68)]
 		case .casualGames:
 			return [Color(red: 0.55, green: 0.82, blue: 0.95), Color(red: 0.42, green: 0.72, blue: 0.89)]
 		case .timePass:
@@ -307,13 +339,13 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 		case .mediaReaders:
 			return [Color(red: 0.96, green: 0.71, blue: 0.42), Color(red: 0.91, green: 0.58, blue: 0.27)]
 		case .productivity:
-			return [Color(red: 0.62, green: 0.75, blue: 0.96), Color(red: 0.48, green: 0.64, blue: 0.90)]
+			return [Color(red: 0.12, green: 0.48, blue: 0.84), Color(red: 0.05, green: 0.28, blue: 0.56)]
 		case .strategyGames:
 			return [Color(red: 0.54, green: 0.82, blue: 0.48), Color(red: 0.42, green: 0.72, blue: 0.38)]
 		case .pvpGames:
 			return [Color(red: 0.79, green: 0.56, blue: 0.98), Color(red: 0.68, green: 0.40, blue: 0.93)]
 		case .devTools:
-			return [Color(red: 0.52, green: 0.82, blue: 0.95), Color(red: 0.38, green: 0.72, blue: 0.89)]
+			return [Color(red: 0.06, green: 0.42, blue: 0.78), Color(red: 0.02, green: 0.22, blue: 0.48)]
 		case .visualArts:
 			return [Color(red: 0.55, green: 0.85, blue: 0.96), Color(red: 0.42, green: 0.75, blue: 0.90)]
 		case .photoVideo:
@@ -368,10 +400,16 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 	}
 }
 
+// MARK: - Store Cache Manager (Separates IPA BLACK Exclusively for Today View)
 @MainActor
 final class AppStoreCacheManager: ObservableObject {
 	static let shared = AppStoreCacheManager()
 	
+	// تطبيقات وتعليمات سورس IPA BLACK حصرياً لصفحة اليوم
+	@Published private(set) var ipablackItems: [AppStoreAppItem] = []
+	@Published private(set) var ipablackEditorialNews: [TodayEditorialInstruction] = []
+	
+	// جميع التطبيقات والألعاب لباقي الأقسام
 	@Published private(set) var allCombinedItems: [AppStoreAppItem] = []
 	@Published private(set) var pureAppsOnly: [AppStoreAppItem] = []
 	@Published private(set) var pureGamesOnly: [AppStoreAppItem] = []
@@ -408,29 +446,62 @@ final class AppStoreCacheManager: ObservableObject {
 		lastSourceSignature = signature
 		isBuildingCache = true
 		
-		let snapshot: [(URL?, ASRepository)] = sources.compactMap { source in
+		let snapshot: [(URL?, String?, ASRepository)] = sources.compactMap { source in
 			guard let repo = repositoriesMap[source] else { return nil }
-			return (source.sourceURL, repo)
+			return (source.sourceURL, source.identifier, repo)
 		}
 		
 		Task.detached(priority: .userInitiated) {
 			var allItems: [AppStoreAppItem] = []
+			var ipaBlackOnly: [AppStoreAppItem] = []
+			var ipaBlackNews: [TodayEditorialInstruction] = []
+			
 			allItems.reserveCapacity(totalCount)
 			var seenKeys = Set<String>()
 			
-			for (sourceURL, repo) in snapshot {
+			for (sourceURL, sourceID, repo) in snapshot {
+				let isIPABlack = ProtectedSourcesVault.isIPABlackSource(sourceURL, identifier: sourceID)
 				let sourceURLString = sourceURL?.absoluteString ?? ""
+				
+				var currentRepoItems: [AppStoreAppItem] = []
 				for app in repo.apps {
 					let uniqueKey = "\(app.id ?? app.currentName)_\(sourceURLString)"
+					let item = AppStoreAppItem(
+						id: uniqueKey,
+						sourceURL: sourceURL,
+						repository: repo,
+						app: app
+					)
+					if isIPABlack {
+						currentRepoItems.append(item)
+					}
 					if seenKeys.insert(uniqueKey).inserted {
-						allItems.append(
-							AppStoreAppItem(
-								id: uniqueKey,
-								sourceURL: sourceURL,
-								repository: repo,
-								app: app
+						allItems.append(item)
+					}
+				}
+				
+				if isIPABlack {
+					ipaBlackOnly.append(contentsOf: currentRepoItems)
+					
+					// قراءة تعليمات وعناصر اليوم (News) من سورس IPA BLACK حصرياً إن وجدت
+					if let newsList = repo.news {
+						for newsItem in newsList {
+							let matchedApp = currentRepoItems.first {
+								$0.app.id == newsItem.appID
+							} ?? currentRepoItems.first
+							
+							ipaBlackNews.append(
+								TodayEditorialInstruction(
+									id: newsItem.id,
+									badge: newsItem.date ?? "يحدث الآن",
+									title: newsItem.title,
+									caption: newsItem.caption,
+									imageURL: newsItem.imageURL,
+									tintColor: newsItem.tintColor ?? AppStoreTheme.oceanBlue,
+									associatedApp: matchedApp
+								)
 							)
-						)
+						}
 					}
 				}
 			}
@@ -462,6 +533,8 @@ final class AppStoreCacheManager: ObservableObject {
 				}
 			}
 			
+			let finalIPABlack = ipaBlackOnly
+			let finalIPABlackNews = ipaBlackNews
 			let finalAll = allItems
 			let finalApps = onlyApps
 			let finalGames = onlyGames
@@ -469,6 +542,8 @@ final class AppStoreCacheManager: ObservableObject {
 			
 			await MainActor.run {
 				let manager = AppStoreCacheManager.shared
+				manager.ipablackItems = finalIPABlack
+				manager.ipablackEditorialNews = finalIPABlackNews
 				manager.allCombinedItems = finalAll
 				manager.pureAppsOnly = finalApps
 				manager.pureGamesOnly = finalGames
@@ -479,6 +554,7 @@ final class AppStoreCacheManager: ObservableObject {
 	}
 }
 
+// MARK: - 1-Click Download -> Auto-Sign -> Auto-Install Engine
 @MainActor
 final class AutoSignPipelineManager: ObservableObject {
 	static let shared = AutoSignPipelineManager()
@@ -530,7 +606,7 @@ final class AutoSignPipelineManager: ObservableObject {
 			activeStates[appKey] = nil
 			UIAlertController.showAlertWithOk(
 				title: "تم التنزيل",
-				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من الإعدادات في الأعلى لتفعليه وتوقيعه تلقائياً."
+				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من الإعدادات في الأعلى لتوقيعه تلقائياً."
 			)
 			return
 		}
@@ -608,101 +684,275 @@ enum AppStoreAppIconProvider {
 	}()
 }
 
+// MARK: - 1. TODAY VIEW (مطابقة 100% لصور App Store المرفقة وتأخذ حصرياً من سورس IPA BLACK)
 struct AppStoreTodayView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	@State private var showSettingsSheet = false
-	@State private var showAddSourceSheet = false
 	
 	@FetchRequest(
 		entity: AltSource.entity(),
 		sortDescriptors: [NSSortDescriptor(keyPath: \AltSource.name, ascending: true)]
 	) private var _sources: FetchedResults<AltSource>
 	
+	// حصرياً من سورس IPA BLACK فقط!
+	private var todayApps: [AppStoreAppItem] {
+		cache.ipablackItems
+	}
+	
+	private var accentColor: Color {
+		Color(hex: userTintHex)
+	}
+	
 	var body: some View {
 		NavigationStack {
 			ScrollView(.vertical, showsIndicators: false) {
-				LazyVStack(alignment: .leading, spacing: 22) {
+				LazyVStack(alignment: .leading, spacing: 26) {
+					// الرأس العلوي: كلمة "اليوم" على اليمين، وأيقونة الحساب فقط على اليسار (تم إزالة علامة + نهائياً)
 					AppStore2026TopHeader(
 						title: "اليوم",
-						onSettingsTap: { showSettingsSheet = true },
-						onAddSourceTap: { showAddSourceSheet = true }
+						onSettingsTap: { showSettingsSheet = true }
 					)
 					
-					if cache.allCombinedItems.isEmpty {
-						AppStore2026EmptyState(
-							isLoading: !viewModel.isFinished,
-							onAddSource: { showAddSourceSheet = true }
-						)
-						.padding(.horizontal, 18)
-						.padding(.top, 30)
+					if todayApps.isEmpty {
+						AppStore2026EmptyState(isLoading: !viewModel.isFinished)
+							.padding(.horizontal, 18)
+							.padding(.top, 30)
 					} else {
-						if let firstHero = cache.pureGamesOnly.first ?? cache.allCombinedItems.first {
+						// 0. تعليمات وعناصر اليوم المباشرة من repo.json الخاص بـ IPA BLACK (إن وجدت في قسم news)
+						ForEach(cache.ipablackEditorialNews) { instruction in
+							if let appItem = instruction.associatedApp {
+								NavigationLink {
+									SourceAppsDetailView(
+										sourceURL: appItem.sourceURL,
+										source: appItem.repository,
+										app: appItem.app
+									)
+								} label: {
+									TodayLiveEventHeroCard(
+										outerTitle: nil,
+										outerSubtitle: nil,
+										cornerBadge: instruction.badge,
+										eventTag: "حدث مميز",
+										headline: instruction.title,
+										descriptionText: instruction.caption,
+										bannerImageURL: instruction.imageURL,
+										cardColor: instruction.tintColor,
+										item: appItem
+									)
+								}
+								.buttonStyle(.plain)
+								.padding(.horizontal, 18)
+							}
+						}
+						
+						// 1. بطاقة "رائج الآن / جرّب هذه التطبيقات الرائجة" (4 عناصر - مطابقة للصورة 32)
+						let trendingFour = Array(todayApps.prefix(4))
+						if !trendingFour.isEmpty {
+							TodayFourAppsListCard(
+								outerTitle: nil,
+								outerSubtitle: nil,
+								innerCaption: "رائج الآن",
+								innerTitle: "جرّب هذه التطبيقات الرائجة",
+								items: trendingFour
+							)
+							.padding(.horizontal, 18)
+						}
+						
+						// 2. قسم "Hot This Week" + بطاقة "يحدث الآن" الحمراء/المرجانية (مطابقة للصورة 31 و 32)
+						if let hotHero = todayApps.first {
 							NavigationLink {
 								SourceAppsDetailView(
-									sourceURL: firstHero.sourceURL,
-									source: firstHero.repository,
-									app: firstHero.app
+									sourceURL: hotHero.sourceURL,
+									source: hotHero.repository,
+									app: hotHero.app
 								)
 							} label: {
-								Today2026HeroCard(
-									item: firstHero,
-									tagText: "رائج الآن",
-									headlineText: "العب فعاليات \(firstHero.app.currentName)"
+								TodayLiveEventHeroCard(
+									outerTitle: "Hot This Week",
+									outerSubtitle: "Catch what's trending on the App Store",
+									cornerBadge: "يحدث الآن",
+									eventTag: "حدث مميز",
+									headline: "اكتشف تجربة \(hotHero.app.currentName) الملحمية",
+									descriptionText: hotHero.app.currentDescription ?? hotHero.arabicSubtitle,
+									bannerImageURL: hotHero.screenshots.first,
+									cardColor: Color(red: 0.78, green: 0.18, blue: 0.12),
+									item: hotHero
 								)
 							}
 							.buttonStyle(.plain)
 							.padding(.horizontal, 18)
 						}
 						
-						if let secondSpotlight = cache.pureAppsOnly.first ?? cache.allCombinedItems.dropFirst().first {
+						// 3. بطاقة "متوفر الآن / موسم جديد" باللون المحيطي المزرق (مطابقة للنصف السفلي من الصورة 31)
+						if let secondLive = todayApps.dropFirst().first ?? todayApps.first {
 							NavigationLink {
 								SourceAppsDetailView(
-									sourceURL: secondSpotlight.sourceURL,
-									source: secondSpotlight.repository,
-									app: secondSpotlight.app
+									sourceURL: secondLive.sourceURL,
+									source: secondLive.repository,
+									app: secondLive.app
 								)
 							} label: {
-								Today2026CenterIconBanner(item: secondSpotlight)
+								TodayLiveEventHeroCard(
+									outerTitle: nil,
+									outerSubtitle: nil,
+									cornerBadge: "متوفر الآن",
+									eventTag: "تحديث جديد",
+									headline: "انطلق مع \(secondLive.app.currentName)",
+									descriptionText: secondLive.arabicSubtitle,
+									bannerImageURL: secondLive.screenshots.first,
+									cardColor: accentColor,
+									item: secondLive
+								)
 							}
 							.buttonStyle(.plain)
 							.padding(.horizontal, 18)
 						}
 						
-						let gameListItems = Array((cache.pureGamesOnly.isEmpty ? cache.allCombinedItems : cache.pureGamesOnly).prefix(5))
-						if !gameListItems.isEmpty {
-							Today2026ListSectionCard(
-								outerTitle: "واصل الركض!",
-								outerSubtitle: "إلى متى يمكنك الصمود في هذه الألعاب؟",
-								innerCaption: "أفضل الألعاب",
-								innerTitle: "ركض بلا نهاية",
-								items: gameListItems
+						// 4. بطاقة "Express Yourself" ذات الصفّين من الأيقونات الكبيرة (مطابقة للصورة 24 حرفياً)
+						let expressGridApps = Array(todayApps.prefix(8))
+						if !expressGridApps.isEmpty, let firstTarget = expressGridApps.first {
+							NavigationLink {
+								AppStore2026CategoryListView(
+									category: .topApps,
+									items: expressGridApps
+								)
+							} label: {
+								TodayTwoRowIconGridCard(
+									outerTitle: "Express Yourself",
+									outerSubtitle: nil,
+									outerPuzzleIcon: false,
+									caption: "من المحرّرين",
+									headline: "أقوى إضافات\nالتصميم والتعديل",
+									descriptionText: "ارتقِ بصورك وفيديوهاتك وتطبيقاتك مع هذه المجموعة المختارة.",
+									gradientColors: [
+										Color(red: 0.34, green: 0.38, blue: 0.38),
+										accentColor.opacity(0.88),
+										Color(red: 0.25, green: 0.56, blue: 0.78)
+									],
+									items: expressGridApps,
+									 fallbackItem: firstTarget
+								)
+							}
+							.buttonStyle(.plain)
+							.padding(.horizontal, 18)
+						}
+						
+						// 5. بطاقة "اكتشف" (4 تطبيقات في بطاقة داكنة - مطابقة للصورة 26)
+						let arcadeStyleFour = Array(todayApps.dropFirst(2).prefix(4))
+						if !arcadeStyleFour.isEmpty {
+							TodayFourAppsListCard(
+								outerTitle: "اكتشف IPA BLACK",
+								outerSubtitle: "تصفح أقوى التطبيقات المعدلة والحصرية بضغطة واحدة.",
+								innerCaption: "هيا نبدأ",
+								innerTitle: "تطبيقات حصرية جاهزة للتثبيت الفوري",
+								items: arcadeStyleFour
 							)
 							.padding(.horizontal, 18)
 						}
 						
-						let appListItems = Array(cache.pureAppsOnly.prefix(5))
-						if !appListItems.isEmpty {
-							Today2026ListSectionCard(
-								outerTitle: "تطبيقات لا غنى عنها",
-								outerSubtitle: "أقوى التطبيقات المعدلة والأدوات اليومية",
-								innerCaption: "اختيارات المحررين",
-								innerTitle: "تطبيقات أساسية",
-								items: appListItems
-							)
+						// 6. بطاقة الواجهة الكاملة "Highway Racer / Dr. Seuss" (مطابقة للصورة 27 و 30)
+						if let fullArtworkItem = todayApps.dropFirst(3).first ?? todayApps.last {
+							NavigationLink {
+								SourceAppsDetailView(
+									sourceURL: fullArtworkItem.sourceURL,
+									source: fullArtworkItem.repository,
+									app: fullArtworkItem.app
+								)
+							} label: {
+								TodayFullArtworkDockCard(
+									categoryTag: "تطبيقات نُحبها",
+									headline: fullArtworkItem.app.currentName,
+									subtitle: fullArtworkItem.arabicSubtitle,
+									showPlayBadge: true,
+									item: fullArtworkItem
+								)
+							}
+							.buttonStyle(.plain)
+							.padding(.horizontal, 18)
+						}
+						
+						// 7. بطاقة "ألعاب وتطبيقات كلاسيكية شهيرة" ذات الصفين باللون الأخضر الزمردي (مطابقة للصورة 25)
+						let classicGridApps = Array(todayApps.reversed().prefix(8))
+						if !classicGridApps.isEmpty, let fallback = classicGridApps.first {
+							NavigationLink {
+								AppStore2026CategoryListView(
+									category: .bestSellingApps,
+									items: classicGridApps
+								)
+							} label: {
+								TodayTwoRowIconGridCard(
+									outerTitle: "إصدارات كلاسيكية شهيرة",
+									outerSubtitle: "عش أجواء التميز مع هذه التطبيقات المختارة",
+									outerPuzzleIcon: false,
+									caption: "هيا نبدأ",
+									headline: "تطبيقات تأخذك إلى القمة",
+									descriptionText: nil,
+									gradientColors: [
+										Color(red: 0.42, green: 0.48, blue: 0.36),
+										Color(red: 0.30, green: 0.62, blue: 0.30),
+										Color(red: 0.22, green: 0.54, blue: 0.24)
+									],
+									items: classicGridApps,
+									fallbackItem: fallback
+								)
+							}
+							.buttonStyle(.plain)
+							.padding(.horizontal, 18)
+						}
+						
+						// 8. بطاقة النصائح التحريرية "٥ نصائح لـ..." (مطابقة للصورة 29)
+						if let tipsItem = todayApps.dropFirst(4).first ?? todayApps.first {
+							NavigationLink {
+								SourceAppsDetailView(
+									sourceURL: tipsItem.sourceURL,
+									source: tipsItem.repository,
+									app: tipsItem.app
+								)
+							} label: {
+								TodayEditorialTipsCard(item: tipsItem)
+							}
+							.buttonStyle(.plain)
+							.padding(.horizontal, 18)
+						}
+						
+						// 9. بطاقة "شيّد عوالم مذهلة / المفضلة لدينا" (مطابقة للصورة 28)
+						let worldGridApps = Array(todayApps.shuffled().prefix(8))
+						if !worldGridApps.isEmpty, let worldFallback = worldGridApps.first {
+							NavigationLink {
+								AppStore2026CategoryListView(
+									category: .topApps,
+									items: worldGridApps
+								)
+							} label: {
+								TodayTwoRowIconGridCard(
+									outerTitle: "شيّد عوالم مذهلة",
+									outerSubtitle: "اصنع وابتكر في هذه التطبيقات الرائعة",
+									outerPuzzleIcon: true,
+									caption: "المفضلة لدينا",
+									headline: "شيّد الأمجاد الرائعة",
+									descriptionText: nil,
+									gradientColors: [
+										Color(red: 0.48, green: 0.46, blue: 0.62),
+										Color(red: 0.56, green: 0.66, blue: 0.78),
+										Color(red: 0.46, green: 0.60, blue: 0.72)
+									],
+									items: worldGridApps,
+									fallbackItem: worldFallback
+								)
+							}
+							.buttonStyle(.plain)
 							.padding(.horizontal, 18)
 						}
 					}
 				}
-				.padding(.bottom, 100)
+				.padding(.bottom, 105)
 			}
 			.background(Color.black.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
-			}
-			.sheet(isPresented: $showAddSourceSheet) {
-				SourcesAddView()
 			}
 			.sheet(isPresented: $showSettingsSheet) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
@@ -719,10 +969,11 @@ struct AppStoreTodayView: View {
 	}
 }
 
+// MARK: - 2. APPS VIEW (قسم التطبيقات فقط)
 struct SourcesView: View {
 	@StateObject var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
-	@State private var _isAddingPresenting = false
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	@State private var _isSettingsPresenting = false
 	@State private var _selectedAppCategory: AppStore2026Category? = nil
 	
@@ -747,23 +998,23 @@ struct SourcesView: View {
 		return cache.pureAppsOnly.filter { $0.category == selected }
 	}
 	
+	private var accentColor: Color {
+		Color(hex: userTintHex)
+	}
+	
 	var body: some View {
 		NavigationStack {
 			ScrollView(.vertical, showsIndicators: false) {
 				LazyVStack(alignment: .leading, spacing: 24) {
 					AppStore2026TopHeader(
 						title: "التطبيقات",
-						onSettingsTap: { _isSettingsPresenting = true },
-						onAddSourceTap: { _isAddingPresenting = true }
+						onSettingsTap: { _isSettingsPresenting = true }
 					)
 					
 					if cache.pureAppsOnly.isEmpty {
-						AppStore2026EmptyState(
-							isLoading: !viewModel.isFinished,
-							onAddSource: { _isAddingPresenting = true }
-						)
-						.padding(.horizontal, 18)
-						.padding(.top, 30)
+						AppStore2026EmptyState(isLoading: !viewModel.isFinished)
+							.padding(.horizontal, 18)
+							.padding(.top, 30)
 					} else {
 						ScrollView(.horizontal, showsIndicators: false) {
 							HStack(spacing: 10) {
@@ -772,12 +1023,12 @@ struct SourcesView: View {
 								} label: {
 									Text("الكل")
 										.font(.subheadline.weight(.bold))
-										.foregroundStyle(_selectedAppCategory == nil ? .black : .white)
+										.foregroundStyle(_selectedAppCategory == nil ? .white : .white.opacity(0.85))
 										.padding(.horizontal, 18)
 										.padding(.vertical, 9)
 										.background(
 											Capsule(style: .continuous)
-												.fill(_selectedAppCategory == nil ? Color.white : Color(white: 0.14))
+												.fill(_selectedAppCategory == nil ? accentColor : Color(white: 0.14))
 										)
 								}
 								.buttonStyle(.plain)
@@ -792,12 +1043,12 @@ struct SourcesView: View {
 											Text(cat.rawValue)
 												.font(.subheadline.weight(.bold))
 										}
-										.foregroundStyle(_selectedAppCategory == cat ? .black : .white)
+										.foregroundStyle(.white)
 										.padding(.horizontal, 16)
 										.padding(.vertical, 9)
 										.background(
 											Capsule(style: .continuous)
-												.fill(_selectedAppCategory == cat ? Color.white : Color(white: 0.14))
+												.fill(_selectedAppCategory == cat ? accentColor : Color(white: 0.14))
 										)
 									}
 									.buttonStyle(.plain)
@@ -833,12 +1084,12 @@ struct SourcesView: View {
 							
 							let socialApps = cache.pureAppsOnly.filter { $0.category == .social }
 							if !socialApps.isEmpty {
-								Today2026ListSectionCard(
+								TodayFourAppsListCard(
 									outerTitle: "تواصل بلا حدود",
 									outerSubtitle: "أحدث نسخ تطبيقات التواصل الاجتماعي",
 									innerCaption: "التواصل الاجتماعي",
 									innerTitle: "تطبيقات المحادثة والمشاركة",
-									items: Array(socialApps.prefix(5))
+									items: Array(socialApps.prefix(4))
 								)
 								.padding(.horizontal, 18)
 							}
@@ -886,9 +1137,6 @@ struct SourcesView: View {
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
 			}
-			.sheet(isPresented: $_isAddingPresenting) {
-				SourcesAddView()
-			}
 			.sheet(isPresented: $_isSettingsPresenting) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
 			}
@@ -904,11 +1152,12 @@ struct SourcesView: View {
 	}
 }
 
+// MARK: - 3. GAMES VIEW (قسم الألعاب فقط)
 struct AppStoreGamesView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	@State private var showSettingsSheet = false
-	@State private var showAddSourceSheet = false
 	@State private var selectedGameCategory: AppStore2026Category? = nil
 	
 	@FetchRequest(
@@ -931,23 +1180,23 @@ struct AppStoreGamesView: View {
 		return cache.pureGamesOnly.filter { $0.category == selected }
 	}
 	
+	private var accentColor: Color {
+		Color(hex: userTintHex)
+	}
+	
 	var body: some View {
 		NavigationStack {
 			ScrollView(.vertical, showsIndicators: false) {
 				LazyVStack(alignment: .leading, spacing: 24) {
 					AppStore2026TopHeader(
 						title: "الألعاب",
-						onSettingsTap: { showSettingsSheet = true },
-						onAddSourceTap: { showAddSourceSheet = true }
+						onSettingsTap: { showSettingsSheet = true }
 					)
 					
 					if cache.pureGamesOnly.isEmpty {
-						AppStore2026EmptyState(
-							isLoading: !viewModel.isFinished,
-							onAddSource: { showAddSourceSheet = true }
-						)
-						.padding(.horizontal, 18)
-						.padding(.top, 20)
+						AppStore2026EmptyState(isLoading: !viewModel.isFinished)
+							.padding(.horizontal, 18)
+							.padding(.top, 20)
 					} else {
 						ScrollView(.horizontal, showsIndicators: false) {
 							HStack(spacing: 10) {
@@ -956,12 +1205,12 @@ struct AppStoreGamesView: View {
 								} label: {
 									Text("كل الألعاب")
 										.font(.subheadline.weight(.bold))
-										.foregroundStyle(selectedGameCategory == nil ? .black : .white)
+										.foregroundStyle(.white)
 										.padding(.horizontal, 18)
 										.padding(.vertical, 9)
 										.background(
 											Capsule(style: .continuous)
-												.fill(selectedGameCategory == nil ? Color.white : Color(white: 0.14))
+												.fill(selectedGameCategory == nil ? accentColor : Color(white: 0.14))
 										)
 								}
 								.buttonStyle(.plain)
@@ -976,12 +1225,12 @@ struct AppStoreGamesView: View {
 											Text(cat.rawValue)
 												.font(.subheadline.weight(.bold))
 										}
-										.foregroundStyle(selectedGameCategory == cat ? .black : .white)
+										.foregroundStyle(.white)
 										.padding(.horizontal, 16)
 										.padding(.vertical, 9)
 										.background(
 											Capsule(style: .continuous)
-												.fill(selectedGameCategory == cat ? Color.white : Color(white: 0.14))
+												.fill(selectedGameCategory == cat ? accentColor : Color(white: 0.14))
 										)
 									}
 									.buttonStyle(.plain)
@@ -999,22 +1248,28 @@ struct AppStoreGamesView: View {
 										app: heroGame.app
 									)
 								} label: {
-									Today2026HeroCard(
-										item: heroGame,
-										tagText: "رائج الآن",
-										headlineText: "العب فعاليات \(heroGame.app.currentName)"
+									TodayLiveEventHeroCard(
+										outerTitle: nil,
+										outerSubtitle: nil,
+										cornerBadge: "يحدث الآن",
+										eventTag: "رائج الآن",
+										headline: "العب مواجهة \(heroGame.app.currentName)",
+										descriptionText: heroGame.arabicSubtitle,
+										bannerImageURL: heroGame.screenshots.first,
+										cardColor: accentColor,
+										item: heroGame
 									)
 								}
 								.buttonStyle(.plain)
 								.padding(.horizontal, 18)
 							}
 							
-							Today2026ListSectionCard(
+							TodayFourAppsListCard(
 								outerTitle: "واصل الركض!",
 								outerSubtitle: "إلى متى يمكنك الصمود في هذه الألعاب؟",
 								innerCaption: "أفضل الألعاب",
-								innerTitle: "ركض بلا نهاية",
-								items: Array(cache.pureGamesOnly.prefix(5))
+								innerTitle: "جرّب هذه الألعاب الرائجة",
+								items: Array(cache.pureGamesOnly.prefix(4))
 							)
 							.padding(.horizontal, 18)
 							
@@ -1066,9 +1321,6 @@ struct AppStoreGamesView: View {
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
 			}
-			.sheet(isPresented: $showAddSourceSheet) {
-				SourcesAddView()
-			}
 			.sheet(isPresented: $showSettingsSheet) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
 			}
@@ -1084,12 +1336,12 @@ struct AppStoreGamesView: View {
 	}
 }
 
+// MARK: - 4. SEARCH VIEW (قسم البحث)
 struct AppStoreSearchView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
 	@State private var searchText = ""
 	@State private var showSettingsSheet = false
-	@State private var showAddSourceSheet = false
 	
 	@FetchRequest(
 		entity: AltSource.entity(),
@@ -1112,8 +1364,7 @@ struct AppStoreSearchView: View {
 				LazyVStack(alignment: .leading, spacing: 26) {
 					AppStore2026TopHeader(
 						title: "بحث",
-						onSettingsTap: { showSettingsSheet = true },
-						onAddSourceTap: { showAddSourceSheet = true }
+						onSettingsTap: { showSettingsSheet = true }
 					)
 					
 					if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1244,9 +1495,6 @@ struct AppStoreSearchView: View {
 				placement: .automatic,
 				prompt: "الألعاب والتطبيقات والمزيد..."
 			)
-			.sheet(isPresented: $showAddSourceSheet) {
-				SourcesAddView()
-			}
 			.sheet(isPresented: $showSettingsSheet) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
 			}
@@ -1262,10 +1510,10 @@ struct AppStoreSearchView: View {
 	}
 }
 
+// MARK: - Top Header (Removed "+" Button Completely - Only Account Avatar Remains)
 struct AppStore2026TopHeader: View {
 	let title: String
 	let onSettingsTap: () -> Void
-	let onAddSourceTap: () -> Void
 	@ObservedObject private var autoSign = AutoSignPipelineManager.shared
 	
 	var body: some View {
@@ -1276,17 +1524,7 @@ struct AppStore2026TopHeader: View {
 			
 			Spacer()
 			
-			HStack(spacing: 12) {
-				Button(action: onAddSourceTap) {
-					Image(systemName: "plus")
-						.font(.system(size: 16, weight: .bold))
-						.foregroundStyle(.white)
-						.frame(width: 36, height: 36)
-						.background(Color(white: 0.16), in: Circle())
-				}
-				
-				AppStoreAccountAppIconButton(action: onSettingsTap)
-			}
+			AppStoreAccountAppIconButton(action: onSettingsTap)
 		}
 		.padding(.horizontal, 18)
 		.padding(.top, 10)
@@ -1300,6 +1538,7 @@ struct AppStore2026TopHeader: View {
 
 struct AppStoreAccountAppIconButton: View {
 	let action: () -> Void
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
 	var body: some View {
 		Button(action: action) {
@@ -1311,12 +1550,12 @@ struct AppStoreAccountAppIconButton: View {
 				} else {
 					ZStack {
 						LinearGradient(
-							colors: [.blue, .indigo],
+							colors: [Color(hex: userTintHex), AppStoreTheme.deepOcean],
 							startPoint: .topLeading,
 							endPoint: .bottomTrailing
 						)
-						Image(systemName: "checkmark.seal.fill")
-							.font(.system(size: 18, weight: .bold))
+						Image(systemName: "person.fill")
+							.font(.system(size: 17, weight: .bold))
 							.foregroundStyle(.white)
 					}
 				}
@@ -1325,13 +1564,528 @@ struct AppStoreAccountAppIconButton: View {
 			.clipShape(Circle())
 			.overlay(
 				Circle()
-					.stroke(Color.white.opacity(0.22), lineWidth: 1)
+					.stroke(Color(hex: userTintHex).opacity(0.65), lineWidth: 1.2)
 			)
 		}
 		.buttonStyle(.plain)
 	}
 }
 
+// MARK: - Authentic Apple App Store Today Cards (100% Match to Attached Screenshots)
+
+// 1. Live Event Hero Card with Top-Right Corner Badge ("يحدث الآن" / "متوفر الآن" - Matches Image 31 & 32)
+struct TodayLiveEventHeroCard: View {
+	let outerTitle: String?
+	let outerSubtitle: String?
+	let cornerBadge: String
+	let eventTag: String
+	let headline: String
+	let descriptionText: String
+	let bannerImageURL: URL?
+	let cardColor: Color
+	let item: AppStoreAppItem
+	
+	var body: some View {
+		VStack(alignment: .leading, spacing: 10) {
+			if let outerTitle {
+				VStack(alignment: .leading, spacing: 2) {
+					Text(outerTitle)
+						.font(.system(size: 22, weight: .heavy))
+						.foregroundStyle(.white)
+					if let outerSubtitle {
+						Text(outerSubtitle)
+							.font(.subheadline)
+							.foregroundStyle(.secondary)
+					}
+				}
+				.padding(.horizontal, 2)
+			}
+			
+			VStack(spacing: 0) {
+				ZStack(alignment: .topLeading) {
+					// خلفية البطاقة الغنية
+					ZStack(alignment: .bottomLeading) {
+						LinearGradient(
+							colors: [
+								cardColor,
+								cardColor.opacity(0.82),
+								Color(red: 0.08, green: 0.08, blue: 0.10)
+							],
+							startPoint: .top,
+							endPoint: .bottom
+						)
+						
+						if let bannerURL = bannerImageURL {
+							LazyImage(url: bannerURL) { state in
+								if let image = state.image {
+									image
+										.resizable()
+										.scaledToFill()
+										.frame(height: 350)
+										.clipped()
+										.opacity(0.55)
+								}
+							}
+						} else {
+							AppStoreIconView(url: item.app.iconURL, size: 138)
+								.shadow(color: .black.opacity(0.45), radius: 18, x: 0, y: 10)
+								.frame(maxWidth: .infinity, maxHeight: .infinity)
+								.offset(y: -38)
+						}
+						
+						LinearGradient(
+							colors: [.clear, cardColor.opacity(0.88), cardColor],
+							startPoint: .center,
+							endPoint: .bottom
+						)
+						
+						// نصوص الحدث المميز على اليمين
+						VStack(alignment: .leading, spacing: 6) {
+							Text(eventTag)
+								.font(.system(size: 13, weight: .bold))
+								.foregroundStyle(.white.opacity(0.9))
+							
+							Text(headline)
+								.font(.system(size: 28, weight: .heavy))
+								.foregroundStyle(.white)
+								.lineLimit(2)
+								.multilineTextAlignment(.leading)
+							
+							Text(descriptionText)
+								.font(.system(size: 14, weight: .medium))
+								.foregroundStyle(.white.opacity(0.88))
+								.lineLimit(2)
+								.multilineTextAlignment(.leading)
+						}
+						.frame(maxWidth: .infinity, alignment: .leading)
+						.padding(.horizontal, 20)
+						.padding(.bottom, 18)
+					}
+					.frame(height: 350)
+					
+					// شارة الزاوية العلوية اليمنى ("يحدث الآن" / "متوفر الآن")
+					Text(cornerBadge)
+						.font(.system(size: 13, weight: .bold))
+						.foregroundStyle(.white)
+						.padding(.horizontal, 16)
+						.padding(.vertical, 8)
+						.background(
+							UnevenRoundedRectangle(
+								topLeadingRadius: 26,
+								bottomLeadingRadius: 0,
+								bottomTrailingRadius: 16,
+								topTrailingRadius: 0,
+								style: .continuous
+							)
+							.fill(Color.black.opacity(0.38))
+						)
+				}
+				
+				Divider()
+					.background(Color.white.opacity(0.14))
+				
+				// الشريط السفلي المدمج
+				HStack(spacing: 12) {
+					AppStoreIconView(url: item.app.iconURL, size: 52)
+					
+					VStack(alignment: .leading, spacing: 2) {
+						Text(item.app.currentName)
+							.font(.system(size: 16, weight: .bold))
+							.foregroundStyle(.white)
+							.lineLimit(1)
+						Text(item.arabicSubtitle)
+							.font(.system(size: 13))
+							.foregroundStyle(.white.opacity(0.8))
+							.lineLimit(1)
+					}
+					
+					Spacer()
+					
+					AppStore2026DownloadButton(app: item.app, useCloudStyle: true, isLightPill: true)
+				}
+				.padding(.horizontal, 18)
+				.padding(.vertical, 14)
+				.background(cardColor.opacity(0.92))
+			}
+			.clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+			.overlay(
+				RoundedRectangle(cornerRadius: 28, style: .continuous)
+					.stroke(Color.white.opacity(0.10), lineWidth: 0.7)
+			)
+		}
+	}
+}
+
+// 2. Two-Row Floating App Icon Grid Card (Matches "Express Yourself", "ألعاب تأخذك إلى الماضي", "شيّد الأمجاد الرائعة" - Images 24, 25, 28)
+struct TodayTwoRowIconGridCard: View {
+	let outerTitle: String?
+	let outerSubtitle: String?
+	let outerPuzzleIcon: Bool
+	let caption: String
+	let headline: String
+	let descriptionText: String?
+	let gradientColors: [Color]
+	let items: [AppStoreAppItem]
+	let fallbackItem: AppStoreAppItem
+	
+	private var topRowItems: [AppStoreAppItem] {
+		Array(items.prefix(4))
+	}
+	
+	private var bottomRowItems: [AppStoreAppItem] {
+		let rest = Array(items.dropFirst(4).prefix(4))
+		return rest.isEmpty ? Array(items.reversed().prefix(4)) : rest
+	}
+	
+	var body: some View {
+		VStack(alignment: .leading, spacing: 10) {
+			if let outerTitle {
+				VStack(alignment: .leading, spacing: 3) {
+					HStack(spacing: 6) {
+						if outerPuzzleIcon {
+							Image(systemName: "puzzlepiece.extension.fill")
+								.font(.system(size: 20))
+								.foregroundStyle(Color(red: 0.35, green: 0.72, blue: 0.98))
+						}
+						Text(outerTitle)
+							.font(.system(size: 22, weight: .heavy))
+							.foregroundStyle(.white)
+					}
+					if let outerSubtitle {
+						Text(outerSubtitle)
+							.font(.subheadline)
+							.foregroundStyle(.secondary)
+					}
+				}
+				.padding(.horizontal, 2)
+			}
+			
+			ZStack(alignment: .bottomLeading) {
+				LinearGradient(
+					colors: gradientColors,
+					startPoint: .top,
+					endPoint: .bottom
+				)
+				
+				// صفّان من الأيقونات الكبيرة العائمة كما في صور App Store 24 و 25 و 28
+				VStack(spacing: 16) {
+					HStack(spacing: 14) {
+						ForEach(topRowItems) { appItem in
+							AppStoreIconView(url: appItem.app.iconURL, size: 84)
+								.shadow(color: .black.opacity(0.28), radius: 10, x: 0, y: 5)
+						}
+					}
+					.offset(x: 16)
+					
+					HStack(spacing: 14) {
+						ForEach(bottomRowItems) { appItem in
+							AppStoreIconView(url: appItem.app.iconURL, size: 84)
+								.shadow(color: .black.opacity(0.28), radius: 10, x: 0, y: 5)
+						}
+					}
+					.offset(x: -16)
+					
+					Spacer()
+				}
+				.padding(.top, 28)
+				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+				
+				// التدرج السفلي والنصوص البيضاء العريضة
+				LinearGradient(
+					colors: [.clear, gradientColors.last?.opacity(0.95) ?? .black],
+					startPoint: .center,
+					endPoint: .bottom
+				)
+				
+				VStack(alignment: .leading, spacing: 6) {
+					Text(caption)
+						.font(.system(size: 13, weight: .bold))
+						.foregroundStyle(.white.opacity(0.88))
+					
+					Text(headline)
+						.font(.system(size: 28, weight: .heavy))
+						.foregroundStyle(.white)
+						.lineLimit(2)
+						.multilineTextAlignment(.leading)
+					
+					if let descriptionText {
+						Text(descriptionText)
+							.font(.system(size: 14, weight: .medium))
+							.foregroundStyle(.white.opacity(0.90))
+							.lineLimit(2)
+					}
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(22)
+			}
+			.frame(height: 365)
+			.clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+			.overlay(
+				RoundedRectangle(cornerRadius: 28, style: .continuous)
+					.stroke(Color.white.opacity(0.10), lineWidth: 0.7)
+			)
+		}
+	}
+}
+
+// 3. Four-Apps Dark List Card (Matches "جرّب هذه الألعاب الرائجة" & "Try These Apple Arcade Games" - Images 26 & 32)
+struct TodayFourAppsListCard: View {
+	let outerTitle: String?
+	let outerSubtitle: String?
+	let innerCaption: String
+	let innerTitle: String
+	let items: [AppStoreAppItem]
+	
+	var body: some View {
+		VStack(alignment: .leading, spacing: 12) {
+			if let outerTitle {
+				VStack(alignment: .leading, spacing: 3) {
+					Text(outerTitle)
+						.font(.system(size: 22, weight: .heavy))
+						.foregroundStyle(.white)
+					if let outerSubtitle {
+						Text(outerSubtitle)
+							.font(.subheadline)
+							.foregroundStyle(.secondary)
+					}
+				}
+				.padding(.horizontal, 4)
+			}
+			
+			VStack(alignment: .leading, spacing: 18) {
+				VStack(alignment: .leading, spacing: 4) {
+					Text(innerCaption)
+						.font(.system(size: 13, weight: .bold))
+						.foregroundStyle(.secondary)
+					Text(innerTitle)
+						.font(.system(size: 27, weight: .heavy))
+						.foregroundStyle(.white)
+						.lineLimit(2)
+						.multilineTextAlignment(.leading)
+				}
+				
+				VStack(spacing: 14) {
+					ForEach(Array(items.prefix(4).enumerated()), id: \.element.id) { index, item in
+						NavigationLink {
+							SourceAppsDetailView(
+								sourceURL: item.sourceURL,
+								source: item.repository,
+								app: item.app
+							)
+						} label: {
+							AppStore2026AppRow(
+								item: item,
+								useCloudIcon: index % 2 == 0
+							)
+						}
+						.buttonStyle(.plain)
+						
+						if index < min(items.count, 4) - 1 {
+							Divider()
+								.background(Color.white.opacity(0.08))
+								.padding(.leading, 70)
+						}
+					}
+				}
+			}
+			.padding(20)
+			.background(
+				RoundedRectangle(cornerRadius: 28, style: .continuous)
+					.fill(AppStoreTheme.cardSurface)
+			)
+			.overlay(
+				RoundedRectangle(cornerRadius: 28, style: .continuous)
+					.stroke(Color.white.opacity(0.07), lineWidth: 0.6)
+			)
+		}
+	}
+}
+
+// 4. Full-Bleed Artwork + Bottom Docked Bar Card (Matches "Highway Racer Pro" & "Dr. Seuss" - Images 27 & 30)
+struct TodayFullArtworkDockCard: View {
+	let categoryTag: String
+	let headline: String
+	let subtitle: String
+	let showPlayBadge: Bool
+	let item: AppStoreAppItem
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
+	
+	private var baseColor: Color {
+		item.app.tintColor ?? Color(hex: userTintHex)
+	}
+	
+	var body: some View {
+		VStack(spacing: 0) {
+			ZStack(alignment: .bottomLeading) {
+				LinearGradient(
+					colors: [
+						baseColor.opacity(0.75),
+						Color(red: 0.16, green: 0.28, blue: 0.42),
+						Color(red: 0.12, green: 0.20, blue: 0.30)
+					],
+					startPoint: .topTrailing,
+					endPoint: .bottomLeading
+				)
+				
+				if let firstScreen = item.screenshots.first {
+					LazyImage(url: firstScreen) { state in
+						if let image = state.image {
+							image
+								.resizable()
+								.scaledToFill()
+								.frame(height: 330)
+								.clipped()
+						}
+					}
+				} else {
+					AppStoreIconView(url: item.app.iconURL, size: 128)
+						.shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
+						.frame(maxWidth: .infinity, maxHeight: .infinity)
+						.offset(y: -35)
+				}
+				
+				if showPlayBadge {
+					Circle()
+						.fill(.ultraThinMaterial)
+						.frame(width: 58, height: 58)
+						.overlay {
+							Image(systemName: "play.fill")
+								.font(.system(size: 22))
+								.foregroundStyle(.white)
+								.offset(x: 2)
+						}
+						.frame(maxWidth: .infinity, maxHeight: .infinity)
+						.offset(y: -30)
+				}
+				
+				LinearGradient(
+					colors: [.clear, Color.black.opacity(0.78)],
+					startPoint: .center,
+					endPoint: .bottom
+				)
+				
+				VStack(alignment: .leading, spacing: 5) {
+					Text(categoryTag)
+						.font(.system(size: 13, weight: .bold))
+						.foregroundStyle(.white.opacity(0.88))
+					Text(headline)
+						.font(.system(size: 28, weight: .heavy))
+						.foregroundStyle(.white)
+						.lineLimit(2)
+					Text(subtitle)
+						.font(.system(size: 14, weight: .medium))
+						.foregroundStyle(.white.opacity(0.88))
+						.lineLimit(2)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 20)
+				.padding(.bottom, 16)
+			}
+			.frame(height: 330)
+			
+			HStack(spacing: 12) {
+				AppStoreIconView(url: item.app.iconURL, size: 50)
+				
+				VStack(alignment: .leading, spacing: 2) {
+					Text(item.app.currentName)
+						.font(.system(size: 16, weight: .bold))
+						.foregroundStyle(.white)
+						.lineLimit(1)
+					Text(item.category.rawValue)
+						.font(.caption)
+						.foregroundStyle(.white.opacity(0.75))
+						.lineLimit(1)
+				}
+				
+				Spacer()
+				
+				AppStore2026DownloadButton(app: item.app, useCloudStyle: false, isLightPill: true)
+			}
+			.padding(.horizontal, 18)
+			.padding(.vertical, 14)
+			.background(Color(red: 0.16, green: 0.22, blue: 0.28))
+		}
+		.clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+		.overlay(
+			RoundedRectangle(cornerRadius: 28, style: .continuous)
+				.stroke(Color.white.opacity(0.10), lineWidth: 0.6)
+		)
+	}
+}
+
+// 5. Editorial Tips Card (Matches "البدء / ٥ نصائح لـ..." - Image 29)
+struct TodayEditorialTipsCard: View {
+	let item: AppStoreAppItem
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
+	
+	var body: some View {
+		VStack(spacing: 0) {
+			ZStack(alignment: .bottomLeading) {
+				LinearGradient(
+					colors: [
+						Color(hex: userTintHex).opacity(0.35),
+						Color(red: 0.05, green: 0.18, blue: 0.36),
+						Color(red: 0.03, green: 0.12, blue: 0.24)
+					],
+					startPoint: .topLeading,
+					endPoint: .bottomTrailing
+				)
+				
+				AppStoreIconView(url: item.app.iconURL, size: 132)
+					.shadow(color: .black.opacity(0.45), radius: 16, x: 0, y: 8)
+					.frame(maxWidth: .infinity, maxHeight: .infinity)
+					.offset(y: -36)
+				
+				VStack(alignment: .leading, spacing: 4) {
+					Text("البدء")
+						.font(.system(size: 13, weight: .bold))
+						.foregroundStyle(.white.opacity(0.80))
+					Text("٥ نصائح لاحتراف\n\(item.app.currentName)")
+						.font(.system(size: 27, weight: .heavy))
+						.foregroundStyle(.white)
+						.lineLimit(2)
+						.multilineTextAlignment(.leading)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 20)
+				.padding(.bottom, 18)
+			}
+			.frame(height: 315)
+			
+			Divider()
+				.background(Color.white.opacity(0.12))
+			
+			HStack(spacing: 12) {
+				AppStoreIconView(url: item.app.iconURL, size: 50)
+				
+				VStack(alignment: .leading, spacing: 2) {
+					Text(item.app.currentName)
+						.font(.system(size: 16, weight: .bold))
+						.foregroundStyle(.white)
+						.lineLimit(1)
+					Text(item.arabicSubtitle)
+						.font(.caption)
+						.foregroundStyle(.white.opacity(0.75))
+						.lineLimit(1)
+				}
+				
+				Spacer()
+				
+				AppStore2026DownloadButton(app: item.app, useCloudStyle: true, isLightPill: true)
+			}
+			.padding(.horizontal, 18)
+			.padding(.vertical, 14)
+			.background(Color(red: 0.04, green: 0.14, blue: 0.28))
+		}
+		.clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+		.overlay(
+			RoundedRectangle(cornerRadius: 28, style: .continuous)
+				.stroke(Color.white.opacity(0.10), lineWidth: 0.6)
+		)
+	}
+}
+
+// MARK: - Settings Popup (Core Sources Hidden & Protected)
 struct AppStore2026SettingsPopup: View {
 	@Environment(\.dismiss) private var dismiss
 	let sources: FetchedResults<AltSource>
@@ -1407,9 +2161,9 @@ struct AppStore2026SettingsPopup: View {
 									HStack(spacing: 12) {
 										Image(systemName: "shippingbox.fill")
 											.font(.system(size: 20))
-											.foregroundStyle(.blue)
+											.foregroundStyle(AppStoreTheme.dynamicAccent)
 											.frame(width: 38, height: 38)
-											.background(Color.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+											.background(AppStoreTheme.dynamicAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
 										
 										VStack(alignment: .leading, spacing: 2) {
 											Text(source.name ?? "مصدر مضاف")
@@ -1501,11 +2255,17 @@ struct CustomSafeAddSourceSheet: View {
 	}
 }
 
+// MARK: - Download & Auto-Sign Button (Follows User Tint Color)
 struct AppStore2026DownloadButton: View {
 	let app: ASRepository.App
 	var useCloudStyle: Bool = false
 	var isLightPill: Bool = false
 	@ObservedObject private var pipeline = AutoSignPipelineManager.shared
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
+	
+	private var accentColor: Color {
+		Color(hex: userTintHex)
+	}
 	
 	private var appKey: String {
 		app.id ?? app.currentName
@@ -1523,14 +2283,14 @@ struct AppStore2026DownloadButton: View {
 			case .downloading:
 				HStack(spacing: 5) {
 					ProgressView()
-						.tint(.blue)
+						.tint(.white)
 						.scaleEffect(0.75)
 					Text("تنزيل...")
 						.font(.system(size: 11, weight: .bold))
-						.foregroundStyle(.blue)
+						.foregroundStyle(.white)
 				}
 				.frame(width: 82, height: 32)
-				.background(Capsule().fill(Color(white: 0.18)))
+				.background(Capsule().fill(accentColor.opacity(0.65)))
 				
 			case .signing:
 				HStack(spacing: 5) {
@@ -1542,7 +2302,7 @@ struct AppStore2026DownloadButton: View {
 						.foregroundStyle(.white)
 				}
 				.frame(width: 82, height: 32)
-				.background(Capsule().fill(Color.blue))
+				.background(Capsule().fill(accentColor))
 				
 			case .ready:
 				HStack(spacing: 4) {
@@ -1559,217 +2319,28 @@ struct AppStore2026DownloadButton: View {
 				if useCloudStyle {
 					Image(systemName: "icloud.and.arrow.down")
 						.font(.system(size: 22, weight: .semibold))
-						.foregroundStyle(Color(red: 0.08, green: 0.52, blue: 1.0))
+						.foregroundStyle(isLightPill ? .white : accentColor)
 						.frame(width: 44, height: 36)
 				} else {
 					VStack(spacing: 3) {
 						Text("تنزيل")
 							.font(.system(size: 15, weight: .bold))
-							.foregroundStyle(isLightPill ? .white : Color(red: 0.10, green: 0.54, blue: 1.0))
+							.foregroundStyle(isLightPill ? .white : accentColor)
 							.frame(width: 78, height: 32)
 							.background(
 								Capsule(style: .continuous)
-									.fill(isLightPill ? Color.white.opacity(0.28) : Color(white: 0.18))
+									.fill(isLightPill ? Color.white.opacity(0.24) : Color(white: 0.18))
 							)
 						
-						if !isLightPill {
-							Text("توقيع تلقائي")
-								.font(.system(size: 8, weight: .medium))
-								.foregroundStyle(.secondary)
-								.lineLimit(1)
-						}
+						Text("الشراء داخل التطبيق")
+							.font(.system(size: 7.5, weight: .medium))
+							.foregroundStyle(isLightPill ? .white.opacity(0.75) : .secondary)
+							.lineLimit(1)
 					}
 				}
 			}
 		}
 		.buttonStyle(.plain)
-	}
-}
-
-struct Today2026HeroCard: View {
-	let item: AppStoreAppItem
-	let tagText: String
-	let headlineText: String
-	
-	private var themeColor: Color {
-		item.app.tintColor ?? item.repository.tintColor ?? Color(red: 0.12, green: 0.32, blue: 0.88)
-	}
-	
-	var body: some View {
-		VStack(spacing: 0) {
-			ZStack(alignment: .bottomLeading) {
-				LinearGradient(
-					colors: [
-						themeColor.opacity(0.95),
-						themeColor.opacity(0.40),
-						Color(red: 0.05, green: 0.06, blue: 0.10)
-					],
-					startPoint: .topTrailing,
-					endPoint: .bottomLeading
-				)
-				
-				AppStoreIconView(url: item.app.iconURL, size: 126)
-					.shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 6)
-					.frame(maxWidth: .infinity, maxHeight: .infinity)
-					.offset(y: -24)
-				
-				LinearGradient(
-					colors: [.clear, .black.opacity(0.88)],
-					startPoint: .center,
-					endPoint: .bottom
-				)
-				
-				VStack(alignment: .leading, spacing: 4) {
-					Text(tagText)
-						.font(.subheadline.weight(.semibold))
-						.foregroundStyle(.white.opacity(0.85))
-					Text(headlineText)
-						.font(.system(size: 27, weight: .heavy))
-						.foregroundStyle(.white)
-						.lineLimit(2)
-				}
-				.frame(maxWidth: .infinity, alignment: .leading)
-				.padding(.horizontal, 18)
-				.padding(.bottom, 16)
-			}
-			.frame(height: 320)
-			
-			HStack(spacing: 12) {
-				AppStoreIconView(url: item.app.iconURL, size: 50)
-				
-				VStack(alignment: .leading, spacing: 2) {
-					Text(item.app.currentName)
-						.font(.system(size: 16, weight: .bold))
-						.foregroundStyle(.white)
-						.lineLimit(1)
-					Text(item.arabicSubtitle)
-						.font(.caption)
-						.foregroundStyle(.secondary)
-						.lineLimit(1)
-				}
-				
-				Spacer()
-				
-				AppStore2026DownloadButton(app: item.app, useCloudStyle: true)
-			}
-			.padding(.horizontal, 16)
-			.padding(.vertical, 14)
-			.background(Color(red: 0.10, green: 0.11, blue: 0.14))
-		}
-		.clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-		.overlay(
-			RoundedRectangle(cornerRadius: 28, style: .continuous)
-				.stroke(Color.white.opacity(0.08), lineWidth: 0.6)
-		)
-	}
-}
-
-struct Today2026CenterIconBanner: View {
-	let item: AppStoreAppItem
-	
-	var body: some View {
-		ZStack(alignment: .bottom) {
-			LinearGradient(
-				colors: [
-					Color(red: 0.48, green: 0.50, blue: 0.55),
-					Color(red: 0.22, green: 0.24, blue: 0.28)
-				],
-				startPoint: .top,
-				endPoint: .bottom
-			)
-			
-			AppStoreIconView(url: item.app.iconURL, size: 84)
-				.frame(maxHeight: .infinity, alignment: .top)
-				.padding(.top, 22)
-			
-			HStack(spacing: 10) {
-				VStack(alignment: .leading, spacing: 4) {
-					Text(item.app.currentName)
-						.font(.system(size: 17, weight: .bold))
-						.foregroundStyle(.white)
-						.lineLimit(1)
-					
-					HStack(spacing: 6) {
-						Text("مميز")
-							.font(.system(size: 10, weight: .bold))
-							.foregroundStyle(.white)
-							.padding(.horizontal, 6)
-							.padding(.vertical, 2)
-							.background(Color.blue, in: RoundedRectangle(cornerRadius: 5))
-						
-						Text(item.arabicSubtitle)
-							.font(.caption)
-							.foregroundStyle(.white.opacity(0.85))
-							.lineLimit(1)
-					}
-				}
-				
-				Spacer()
-				
-				AppStore2026DownloadButton(app: item.app, useCloudStyle: false, isLightPill: true)
-			}
-			.padding(.horizontal, 18)
-			.padding(.vertical, 14)
-			.background(Color.black.opacity(0.45))
-		}
-		.frame(height: 195)
-		.clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-	}
-}
-
-struct Today2026ListSectionCard: View {
-	let outerTitle: String
-	let outerSubtitle: String
-	let innerCaption: String
-	let innerTitle: String
-	let items: [AppStoreAppItem]
-	
-	var body: some View {
-		VStack(alignment: .leading, spacing: 12) {
-			VStack(alignment: .leading, spacing: 3) {
-				Text(outerTitle)
-					.font(.system(size: 22, weight: .heavy))
-					.foregroundStyle(.white)
-				Text(outerSubtitle)
-					.font(.subheadline)
-					.foregroundStyle(.secondary)
-			}
-			.padding(.horizontal, 4)
-			
-			VStack(alignment: .leading, spacing: 16) {
-				VStack(alignment: .leading, spacing: 4) {
-					Text(innerCaption)
-						.font(.caption.weight(.semibold))
-						.foregroundStyle(.secondary)
-					Text(innerTitle)
-						.font(.system(size: 26, weight: .heavy))
-						.foregroundStyle(.white)
-				}
-				
-				VStack(spacing: 14) {
-					ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-						NavigationLink {
-							SourceAppsDetailView(
-								sourceURL: item.sourceURL,
-								source: item.repository,
-								app: item.app
-							)
-						} label: {
-							AppStore2026AppRow(
-								item: item,
-								useCloudIcon: index == 0 || index == 4
-							)
-						}
-						.buttonStyle(.plain)
-					}
-				}
-			}
-			.padding(20)
-			.background(
-				RoundedRectangle(cornerRadius: 26, style: .continuous)
-					.fill(Color(red: 0.11, green: 0.11, blue: 0.12))
-			)
-		}
 	}
 }
 
@@ -1801,6 +2372,7 @@ struct AppStore2026AppRow: View {
 
 struct AppStore2026SuggestedHighlightRow: View {
 	let item: AppStoreAppItem
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
 	var body: some View {
 		HStack(spacing: 12) {
@@ -1820,7 +2392,7 @@ struct AppStore2026SuggestedHighlightRow: View {
 					.foregroundStyle(.white)
 					.padding(.horizontal, 6)
 					.padding(.vertical, 2)
-					.background(Color.blue.opacity(0.8), in: RoundedRectangle(cornerRadius: 4))
+					.background(Color(hex: userTintHex), in: RoundedRectangle(cornerRadius: 4))
 			}
 			
 			Spacer()
@@ -1830,7 +2402,7 @@ struct AppStore2026SuggestedHighlightRow: View {
 		.padding(12)
 		.background(
 			RoundedRectangle(cornerRadius: 20, style: .continuous)
-				.fill(Color(red: 0.12, green: 0.14, blue: 0.18))
+				.fill(Color(red: 0.08, green: 0.13, blue: 0.22))
 		)
 	}
 }
@@ -1937,16 +2509,17 @@ struct AppStore2026ThreeRowSection: View {
 
 struct AppStore2026FeaturedBanner: View {
 	let item: AppStoreAppItem
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
 	private var bannerColor: Color {
-		item.app.tintColor ?? item.repository.tintColor ?? Color.blue
+		item.app.tintColor ?? Color(hex: userTintHex)
 	}
 	
 	var body: some View {
 		VStack(alignment: .leading, spacing: 6) {
 			Text(item.category.rawValue)
 				.font(.caption2.weight(.bold))
-				.foregroundStyle(.blue)
+				.foregroundStyle(Color(hex: userTintHex))
 			Text(item.app.currentName)
 				.font(.title3.weight(.bold))
 				.foregroundStyle(.white)
@@ -1958,7 +2531,7 @@ struct AppStore2026FeaturedBanner: View {
 			
 			ZStack(alignment: .bottom) {
 				LinearGradient(
-					colors: [bannerColor.opacity(0.85), Color(white: 0.12)],
+					colors: [bannerColor.opacity(0.88), AppStoreTheme.deepOcean],
 					startPoint: .topTrailing,
 					endPoint: .bottomLeading
 				)
@@ -1979,7 +2552,7 @@ struct AppStore2026FeaturedBanner: View {
 					
 					Spacer()
 					
-					AppStore2026DownloadButton(app: item.app, useCloudStyle: true)
+					AppStore2026DownloadButton(app: item.app, useCloudStyle: true, isLightPill: true)
 				}
 				.padding(14)
 				.background(Color.black.opacity(0.55))
@@ -2023,7 +2596,7 @@ struct AppStore2026SearchResultCard: View {
 		.padding(16)
 		.background(
 			RoundedRectangle(cornerRadius: 22, style: .continuous)
-				.fill(Color(red: 0.11, green: 0.11, blue: 0.12))
+				.fill(AppStoreTheme.cardSurface)
 		)
 	}
 }
@@ -2047,7 +2620,7 @@ struct AppStore2026CategoryListView: View {
 							.padding(14)
 							.background(
 								RoundedRectangle(cornerRadius: 20, style: .continuous)
-									.fill(Color(red: 0.11, green: 0.11, blue: 0.12))
+									.fill(AppStoreTheme.cardSurface)
 							)
 					}
 					.buttonStyle(.plain)
@@ -2086,7 +2659,7 @@ struct AppStoreIconView: View {
 		.clipShape(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous))
 		.overlay(
 			RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-				.stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+				.stroke(Color.white.opacity(0.14), lineWidth: 0.6)
 		)
 	}
 	
@@ -2098,35 +2671,22 @@ struct AppStoreIconView: View {
 
 struct AppStore2026EmptyState: View {
 	let isLoading: Bool
-	let onAddSource: () -> Void
+	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
 	var body: some View {
 		VStack(spacing: 16) {
-			if isLoading {
-				ProgressView()
-					.tint(.white)
-					.scaleEffect(1.3)
-				Text("جاري تحميل المتجر والتطبيقات...")
-					.font(.subheadline)
-					.foregroundStyle(.secondary)
-			} else {
-				Image(systemName: "bag.badge.plus")
-					.font(.system(size: 46))
-					.foregroundStyle(.blue)
-				Text("جاري تجهيز المتجر")
-					.font(.title3.weight(.bold))
-					.foregroundStyle(.white)
-				Text("اسحب الشاشة للأسفل لتحديث التطبيقات أو أضف مصدراً إضافياً.")
-					.font(.subheadline)
-					.foregroundStyle(.secondary)
-					.multilineTextAlignment(.center)
-			}
+			ProgressView()
+				.tint(Color(hex: userTintHex))
+				.scaleEffect(1.3)
+			Text("جاري مزامنة المتجر...")
+				.font(.subheadline.weight(.semibold))
+				.foregroundStyle(.white)
 		}
 		.frame(maxWidth: .infinity)
-		.padding(32)
+		.padding(36)
 		.background(
 			RoundedRectangle(cornerRadius: 26, style: .continuous)
-				.fill(Color(red: 0.11, green: 0.11, blue: 0.12))
+				.fill(AppStoreTheme.cardSurface)
 		)
 	}
 }
