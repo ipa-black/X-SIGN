@@ -34,7 +34,7 @@ enum TabEnum: String, CaseIterable, Hashable {
 		case .today:        return "doc.text.image"
 		case .games:        return "flame.fill"
 		case .sources: 		return "square.stack.3d.up.fill"
-		case .library: 		return "checkmark.seal.fill"
+		case .library: 		return "arcade.stick.console"
 		case .search:       return "magnifyingglass"
 		case .settings: 	return "gearshape.fill"
 		case .certificates: return "person.text.rectangle"
