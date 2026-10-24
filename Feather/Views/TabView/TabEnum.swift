@@ -35,7 +35,7 @@ enum TabEnum: String, CaseIterable, Hashable {
 		case .today:        return "doc.text.image"
 		case .games:        return "paperplane.fill"
 		case .sources: 		return "square.stack.3d.up.fill"
-		case .library: 		return "arcade.stick.console.fill"
+		case .library: 		return "arcade.stick"
 		case .search:       return "magnifyingglass"
 		case .settings: 	return "gearshape.fill"
 		case .certificates: return "person.text.rectangle"
@@ -44,13 +44,20 @@ enum TabEnum: String, CaseIterable, Hashable {
 	
 	@ViewBuilder
 	var tabLabel: some View {
-		if self == .games {
+		switch self {
+		case .games:
 			Label {
 				Text(title)
 			} icon: {
 				Image(uiImage: AppStoreCustomTabIcons.gamesRocketIcon)
 			}
-		} else {
+		case .library:
+			Label {
+				Text(title)
+			} icon: {
+				Image(uiImage: AppStoreCustomTabIcons.arcadeJoystickIcon)
+			}
+		default:
 			Label(title, systemImage: icon)
 		}
 	}
@@ -83,7 +90,7 @@ enum TabEnum: String, CaseIterable, Hashable {
 	}
 }
 
-// MARK: - Exact App Store Games Rocket Vector Icon Generator
+// MARK: - Exact App Store Custom Vector Icons (Rocket + Apple Arcade Isometric Joystick)
 enum AppStoreCustomTabIcons {
 	static let gamesRocketIcon: UIImage = {
 		let size = CGSize(width: 26, height: 26)
@@ -91,13 +98,11 @@ enum AppStoreCustomTabIcons {
 		let image = renderer.image { ctx in
 			let cgContext = ctx.cgContext
 			cgContext.translateBy(x: size.width / 2, y: size.height / 2)
-			// إمالة الصاروخ بزاوية 45 درجة لليمين العلوي تماماً مثل App Store
 			cgContext.rotate(by: .pi / 4)
 			cgContext.translateBy(x: -size.width / 2, y: -size.height / 2)
 			
 			UIColor.white.setFill()
 			
-			// جسم الصاروخ الانسيابي
 			let bodyPath = UIBezierPath()
 			bodyPath.move(to: CGPoint(x: 13, y: 2.0))
 			bodyPath.addCurve(
@@ -115,7 +120,6 @@ enum AppStoreCustomTabIcons {
 			)
 			bodyPath.close()
 			
-			// الجناح الأيسر
 			let leftFin = UIBezierPath()
 			leftFin.move(to: CGPoint(x: 8.7, y: 12.8))
 			leftFin.addCurve(
@@ -126,7 +130,6 @@ enum AppStoreCustomTabIcons {
 			leftFin.addLine(to: CGPoint(x: 9.6, y: 17.5))
 			leftFin.close()
 			
-			// الجناح الأيمن
 			let rightFin = UIBezierPath()
 			rightFin.move(to: CGPoint(x: 17.3, y: 12.8))
 			rightFin.addCurve(
@@ -137,7 +140,6 @@ enum AppStoreCustomTabIcons {
 			rightFin.addLine(to: CGPoint(x: 16.4, y: 17.5))
 			rightFin.close()
 			
-			// شعلة الدفع السفلية
 			let flamePath = UIBezierPath()
 			flamePath.move(to: CGPoint(x: 11.0, y: 19.4))
 			flamePath.addQuadCurve(to: CGPoint(x: 13.0, y: 24.2), controlPoint: CGPoint(x: 11.2, y: 22.8))
@@ -149,11 +151,58 @@ enum AppStoreCustomTabIcons {
 			bodyPath.append(flamePath)
 			bodyPath.fill()
 			
-			// تفريغ النافذة الدائرية في وسط الصاروخ
 			cgContext.setBlendMode(.clear)
 			let windowRect = CGRect(x: 10.7, y: 8.2, width: 4.6, height: 4.6)
 			UIBezierPath(ovalIn: windowRect).fill()
 			cgContext.setBlendMode(.normal)
+		}
+		return image.withRenderingMode(.alwaysTemplate)
+	}()
+	
+	// أيقونة عصا الأركيد الماسية ثلاثية الأبعاد المطابقة لأيقونة Apple Arcade
+	static let arcadeJoystickIcon: UIImage = {
+		let size = CGSize(width: 26, height: 26)
+		let renderer = UIGraphicsImageRenderer(size: size)
+		let image = renderer.image { ctx in
+			let cg = ctx.cgContext
+			UIColor.white.setFill()
+			UIColor.white.setStroke()
+			
+			// 1. الكرة العلوية لعصا التحكم
+			let ballRect = CGRect(x: 10.2, y: 2.2, width: 5.6, height: 5.6)
+			UIBezierPath(ovalIn: ballRect).fill()
+			
+			// 2. العمود الأوسط لعصا التحكم
+			let stickRect = CGRect(x: 12.0, y: 7.2, width: 2.0, height: 7.5)
+			UIBezierPath(roundedRect: stickRect, cornerRadius: 1.0).fill()
+			
+			// 3. القاعدة الماسية العلوية (Isometric Diamond Deck)
+			let topDeck = UIBezierPath()
+			topDeck.move(to: CGPoint(x: 13.0, y: 11.2))
+			topDeck.addLine(to: CGPoint(x: 23.2, y: 15.8))
+			topDeck.addLine(to: CGPoint(x: 13.0, y: 20.4))
+			topDeck.addLine(to: CGPoint(x: 2.8, y: 15.8))
+			topDeck.close()
+			topDeck.fill()
+			
+			// تفريغ فتحة صغيرة حول عمود العصا وزر جانبي لإبراز التفاصيل ثلاثية الأبعاد
+			cg.setBlendMode(.clear)
+			UIBezierPath(ovalIn: CGRect(x: 10.8, y: 13.6, width: 4.4, height: 2.4)).fill()
+			UIBezierPath(ovalIn: CGRect(x: 6.8, y: 14.8, width: 2.0, height: 1.4)).fill()
+			cg.setBlendMode(.normal)
+			
+			// إعادة رسم نهاية العصا وسط الفتحة
+			UIBezierPath(roundedRect: CGRect(x: 12.0, y: 11.0, width: 2.0, height: 4.2), cornerRadius: 1.0).fill()
+			
+			// 4. الحافة السفلية ثلاثية الأبعاد للقاعدة الماسية
+			let bottomLip = UIBezierPath()
+			bottomLip.move(to: CGPoint(x: 3.2, y: 18.0))
+			bottomLip.addLine(to: CGPoint(x: 13.0, y: 22.5))
+			bottomLip.addLine(to: CGPoint(x: 22.8, y: 18.0))
+			bottomLip.lineWidth = 2.0
+			bottomLip.lineCapStyle = .round
+			bottomLip.lineJoinStyle = .round
+			bottomLip.stroke()
 		}
 		return image.withRenderingMode(.alwaysTemplate)
 	}()
