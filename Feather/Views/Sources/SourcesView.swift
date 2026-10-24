@@ -26,25 +26,26 @@ enum AppStoreTheme {
 	}
 }
 
-// MARK: - Protected Sources Vault
+// MARK: - Protected Sources Vault (IPABLACK + store-api)
 enum ProtectedSourcesVault {
 	static let coreURLs: [String] = [
 		"https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json",
-		"https://repository.apptesters.org/",
-		"https://repo.apptesters.org/"
+		"https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json"
 	]
 	
+	// يحدد سورس IPABLACK المخصص لصفحة اليوم حصرياً
 	static func isIPABlackSource(_ sourceURL: URL?, identifier: String? = nil) -> Bool {
 		let urlStr = sourceURL?.absoluteString.lowercased() ?? ""
 		let idStr = identifier?.lowercased() ?? ""
-		return urlStr.contains("ipablack") || idStr.contains("ipablack")
+		return urlStr.contains("/ipablack/") || idStr == "xsign.core.ipablack"
 	}
 	
+	// يخفي السورسين الأساسيين (IPABLACK و store-api) من قائمة المصادر ويمنع تصديرهما
 	static func isHiddenCoreSource(_ source: AltSource) -> Bool {
 		let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
 		let idStr = source.identifier?.lowercased() ?? ""
-		return urlStr.contains("ipablack") ||
-			urlStr.contains("apptesters") ||
+		return urlStr.contains("/ipablack/") ||
+			urlStr.contains("store-api") ||
 			idStr.contains("xsign.core")
 	}
 }
@@ -530,7 +531,7 @@ final class AppStoreCacheManager: ObservableObject {
 				}
 			}
 			
-			let finalIPABlack = ipaBlackOnly
+			let finalIPABlack = ipaBlackOnly.isEmpty ? allItems : ipaBlackOnly
 			let finalIPABlackNews = ipaBlackNews
 			let finalAll = allItems
 			let finalApps = onlyApps
