@@ -9,7 +9,7 @@ import SwiftUI
 import CoreData
 import NimbleViews
 
-// MARK: - Minimalist Signing View with Zero-RAM Fast Import & Instant Sign
+// MARK: - Minimalist Signing View with Instant Info.plist Auto-Sign on Import
 struct LibraryView: View {
 	@StateObject var downloadManager = DownloadManager.shared
 	@StateObject var sourcesViewModel = SourcesViewModel.shared
@@ -112,7 +112,7 @@ struct LibraryView: View {
 				}
 				
 				if !_filteredImportedApps.isEmpty && (_selectedScope == .all || _selectedScope == .imported) {
-					NBSection("جاهزة للتوقيع الفوري", secondary: _filteredImportedApps.count.description) {
+					NBSection("جاهزة للتوقيع اللحظي", secondary: _filteredImportedApps.count.description) {
 						ForEach(_filteredImportedApps, id: \.uuid) { app in
 							VStack(spacing: 8) {
 								LibraryCellView(
@@ -133,12 +133,12 @@ struct LibraryView: View {
 												ProgressView()
 													.tint(.white)
 													.scaleEffect(0.8)
-												Text("جاري التوقيع السريع...")
+												Text("توقيع لحظي...")
 													.font(.footnote.weight(.bold))
 											} else {
 												Image(systemName: "bolt.fill")
 													.font(.footnote.weight(.bold))
-												Text("توقيع وتثبيت فوري")
+												Text("توقيع وتثبيت لحظي")
 													.font(.footnote.weight(.bold))
 											}
 										}
@@ -193,9 +193,9 @@ struct LibraryView: View {
 						ContentUnavailableView {
 							Label("لا توجد تطبيقات", systemImage: "arcade.stick.console.fill")
 						} description: {
-							Text("استورد ملف IPA لتوقيعه وتثبيته بسرعة قصوى وبضغطة واحدة.")
+							Text("استورد ملف IPA ليتم قراءة Info.plist وتوقيعه لحظياً.")
 						} actions: {
-							Button("استيراد ملف IPA") {
+							Button("استيراد وتوقيع ملف IPA") {
 								_isImportingPresenting = true
 							}
 							.buttonStyle(.borderedProminent)
@@ -219,10 +219,10 @@ struct LibraryView: View {
 						.disabled(_selectedAppUUIDs.isEmpty)
 					} else {
 						Menu {
-							Button("استيراد سريع من الملفات", systemImage: "folder") {
+							Button("استيراد وتوقيع لحظي من الملفات", systemImage: "bolt.doc.fill") {
 								_isImportingPresenting = true
 							}
-							Button("استيراد من رابط مباشر", systemImage: "link") {
+							Button("استيراد وتوقيع من رابط مباشر", systemImage: "link") {
 								_isDownloadingPresenting = true
 							}
 						} label: {
@@ -254,7 +254,7 @@ struct LibraryView: View {
 					allowedContentTypes: [.ipa, .tipa],
 					allowsMultipleSelection: true,
 					onDocumentsPicked: { urls in
-						_fastLowRAMImport(urls: urls)
+						_instantImportAndAutoSign(urls: urls)
 					}
 				)
 				.ignoresSafeArea()
@@ -262,13 +262,13 @@ struct LibraryView: View {
 			.sheet(isPresented: $_isSettingsPresenting) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: sourcesViewModel)
 			}
-			.alert("استيراد من رابط مباشر", isPresented: $_isDownloadingPresenting) {
+			.alert("استيراد وتوقيع من رابط مباشر", isPresented: $_isDownloadingPresenting) {
 				TextField("https://example.com/app.ipa", text: $_alertDownloadString)
 					.textInputAutocapitalization(.never)
 				Button("إلغاء", role: .cancel) {
 					_alertDownloadString = ""
 				}
-				Button("استيراد") {
+				Button("تنزيل وتوقيع") {
 					if let url = URL(string: _alertDownloadString) {
 						_ = downloadManager.startDownload(from: url, id: "FeatherManualDownload_\(UUID().uuidString)")
 					}
@@ -289,12 +289,13 @@ struct LibraryView: View {
 		.preferredColorScheme(.dark)
 	}
 	
-	// MARK: - Zero-RAM-Spike Fast File Importer
-	private func _fastLowRAMImport(urls: [URL]) {
+	// MARK: - Instant Import + Direct Info.plist Prewarm + Automatic ZSign
+	private func _instantImportAndAutoSign(urls: [URL]) {
 		guard !urls.isEmpty else { return }
-		_oneClickStatusMessage = "جاري الاستيراد السريع (\(urls.count))..."
+		let existingUUIDs = Set(AutoSignPipelineManager.fetchImportedApps().compactMap { $0.uuid })
+		_oneClickStatusMessage = "جاري فك الحزمة وقراءة Info.plist..."
 		
-		Task.detached(priority: .userInitiated) {
+		DispatchQueue.global(qos: .userInteractive).async {
 			for url in urls {
 				autoreleasepool {
 					let hasAccess = url.startAccessingSecurityScopedResource()
@@ -303,19 +304,28 @@ struct LibraryView: View {
 							url.stopAccessingSecurityScopedResource()
 						}
 					}
-					let id = "FastImport_\(UUID().uuidString)"
+					let id = "TurboImport_\(UUID().uuidString)"
 					let dl = DownloadManager.shared.startArchive(from: url, id: id)
 					try? DownloadManager.shared.handlePachageFile(url: url, dl: dl)
 				}
 			}
-			await MainActor.run {
-				_oneClickStatusMessage = nil
-				UINotificationFeedbackGenerator().notificationOccurred(.success)
+			
+			DispatchQueue.main.async {
+				let currentImported = AutoSignPipelineManager.fetchImportedApps()
+				if let newlyImported = currentImported.first(where: { item in
+					guard let uuid = item.uuid else { return false }
+					return !existingUUIDs.contains(uuid)
+				}) ?? currentImported.first {
+					AutoSignPipelineManager.prewarmInfoPlist(for: newlyImported)
+					_ultraFastSign(app: newlyImported)
+				} else {
+					_oneClickStatusMessage = nil
+				}
 			}
 		}
 	}
 	
-	// MARK: - Ultra-Fast Instant Signing
+	// MARK: - Ultra-Fast Instant Signing via ZSign
 	private func _ultraFastSign(app: AppInfoPresentable) {
 		let selectedCertIndex = UserDefaults.standard.integer(forKey: "feather.selectedCert")
 		let activeCert: CertificatePair? = {
@@ -326,6 +336,7 @@ struct LibraryView: View {
 		}()
 		
 		guard let cert = activeCert else {
+			_oneClickStatusMessage = nil
 			UIAlertController.showAlertWithOk(
 				title: "لا توجد شهادة",
 				message: "يرجى إضافة شهادة توقيع أولاً من أيقونة الحساب في الأعلى."
@@ -336,7 +347,7 @@ struct LibraryView: View {
 		let uuid = app.uuid ?? ""
 		UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
 		_signingInProgressUUIDs.insert(uuid)
-		_oneClickStatusMessage = "جاري التوقيع الفوري لـ \(app.name ?? "التطبيق")..."
+		_oneClickStatusMessage = "توقيع لحظي لـ \(app.name ?? "التطبيق")..."
 		
 		let options = OptionsManager.shared.options
 		
@@ -358,7 +369,7 @@ struct LibraryView: View {
 					)
 				} else {
 					UINotificationFeedbackGenerator().notificationOccurred(.success)
-					if let newlySigned = _signedApps.first {
+					if let newlySigned = AutoSignPipelineManager.fetchSignedApps().first ?? _signedApps.first {
 						_selectedInstallAppPresenting = AnyApp(base: newlySigned)
 					}
 				}
