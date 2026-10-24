@@ -45,7 +45,7 @@ struct FeatherApp: App {
 				.animation(.smooth, value: downloadManager.manualDownloads.description)
 				
 				if _showSplash {
-					XSignExactLaunchSplashView(
+					XSignPhotoIdenticalSplashView(
 						cache: storeCache,
 						sourcesViewModel: sourcesViewModel
 					) {
@@ -179,97 +179,106 @@ struct FeatherApp: App {
 	}
 }
 
-// MARK: - Exact Authentic X-Sign Logo Vector Shape (100% Identical to User Image)
-struct ExactXSignOutlineLogoShape: Shape {
+// MARK: - Exact Double-Slash Sharp Vector Paths (100% Geometry Matched to User Image)
+struct PhotoIdenticalLeftThickArm: Shape {
 	func path(in rect: CGRect) -> Path {
 		let w = rect.width
 		let h = rect.height
-		
-		func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-			CGPoint(x: x * w, y: y * h)
-		}
+		func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * w, y: y * h) }
 		
 		var path = Path()
-		
-		// 1. الشفرة القطرية الرئيسية الأولى (من أقصى أعلى اليمين الحاد إلى أقصى أسفل اليسار المستدق الحاد)
-		path.move(to: p(0.638, 0.062))
-		path.addLine(to: p(0.485, 0.282))
-		path.addLine(to: p(0.395, 0.198))
-		path.addLine(to: p(0.315, 0.198))
-		path.addLine(to: p(0.435, 0.448))
-		path.addLine(to: p(0.258, 0.692))
-		path.addLine(to: p(0.535, 0.692))
-		path.addLine(to: p(0.675, 0.575))
-		path.addLine(to: p(0.515, 0.448))
-		path.addLine(to: p(0.638, 0.062))
+		// الضلع الرئيسي المائل: قمة علوية عريضة تنحدر بزاوية دقيقة وتستقر على قاعدة أفقية
+		path.move(to: pt(0.316, 0.205))
+		path.addLine(to: pt(0.442, 0.205))
+		path.addLine(to: pt(0.672, 0.572))
+		path.addLine(to: pt(0.536, 0.572))
 		path.closeSubpath()
-		
-		// 2. الشفرة المتوازية السفلية الحادة الحارقة (تخرج كشفرة سيف مستدقة كما في صورتك)
-		path.move(to: p(0.742, 0.065))
-		path.addLine(to: p(0.565, 0.485))
-		path.addLine(to: p(0.365, 0.692))
-		path.addLine(to: p(0.485, 0.575))
-		path.addLine(to: p(0.742, 0.065))
-		path.closeSubpath()
-		
-		// 3. الذراع الموازي الممتد بحدة نحو أسفل اليسار
-		path.move(to: p(0.258, 0.692))
-		path.addLine(to: p(0.365, 0.935))
-		path.addLine(to: p(0.445, 0.745))
-		path.addLine(to: p(0.258, 0.692))
-		path.closeSubpath()
-		
 		return path
 	}
 }
 
-// رسم شعار X الهندسي الأصلي المفرّغ المحاط بالأبيض الناصع
-struct ExactXSignRenderView: View {
+struct PhotoIdenticalFirstSlash: Shape {
+	func path(in rect: CGRect) -> Path {
+		let w = rect.width
+		let h = rect.height
+		func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * w, y: y * h) }
+		
+		var path = Path()
+		// الشفرة الصاعدة الأولى الحادة (تبدأ من إبرة مستدقة في الأسفل وتصعد موازية للأعلى)
+		path.move(to: pt(0.258, 0.690))
+		path.addLine(to: pt(0.636, 0.065))
+		path.addLine(to: pt(0.518, 0.442))
+		path.closeSubpath()
+		return path
+	}
+}
+
+struct PhotoIdenticalSecondSlash: Shape {
+	func path(in rect: CGRect) -> Path {
+		let w = rect.width
+		let h = rect.height
+		func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * w, y: y * h) }
+		
+		var path = Path()
+		// الشفرة الصاعدة الثانية الموازية الخارقة في أقصى اليمين
+		path.move(to: pt(0.362, 0.695))
+		path.addLine(to: pt(0.742, 0.065))
+		path.addLine(to: pt(0.576, 0.525))
+		path.closeSubpath()
+		return path
+	}
+}
+
+// التركيب الهندسي الكامل لشعار X الأبيض مع العمق الأزرق الملكي
+struct PhotoIdenticalXVectorView: View {
 	let progress: CGFloat
 	let glow: Double
 	
 	var body: some View {
 		ZStack {
-			// الظل العميق الأزرق المحيطي 3D
-			ExactXSignOutlineLogoShape()
-				.trim(from: 0, to: progress)
-				.stroke(
-					Color(red: 0.0, green: 0.36, blue: 0.73).opacity(0.85),
-					style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
-				)
-				.frame(width: 210, height: 210)
-				.offset(x: 4, y: 7)
-				.blur(radius: 6)
+			// الظل ثلاثي الأبعاد
+			Group {
+				PhotoIdenticalLeftThickArm()
+					.fill(Color(red: 0.0, green: 0.32, blue: 0.68).opacity(0.85))
+				PhotoIdenticalFirstSlash()
+					.fill(Color(red: 0.0, green: 0.32, blue: 0.68).opacity(0.85))
+				PhotoIdenticalSecondSlash()
+					.fill(Color(red: 0.0, green: 0.32, blue: 0.68).opacity(0.85))
+			}
+			.frame(width: 230, height: 230)
+			.offset(x: 4.5, y: 7)
+			.blur(radius: 5)
 			
-			// المسار الخارجي الأبيض الصافي الحاد
-			ExactXSignOutlineLogoShape()
-				.trim(from: 0, to: progress)
-				.stroke(
-					Color.white,
-					style: StrokeStyle(lineWidth: 5.5, lineCap: .round, lineJoin: .miter, miterLimit: 16)
-				)
-				.frame(width: 210, height: 210)
-				.shadow(color: Color.white.opacity(0.85 * glow), radius: 14, x: 0, y: 0)
+			// التعبئة الكحلية الداخلية للأذرع
+			Group {
+				PhotoIdenticalLeftThickArm()
+					.fill(Color(red: 0.00, green: 0.22, blue: 0.52))
+				PhotoIdenticalFirstSlash()
+					.fill(Color(red: 0.00, green: 0.22, blue: 0.52))
+				PhotoIdenticalSecondSlash()
+					.fill(Color(red: 0.00, green: 0.22, blue: 0.52))
+			}
+			.frame(width: 230, height: 230)
 			
-			// اللمسة الداخلية الفاخرة للون الكحلي المحيطي مثل صورة الأيقونة
-			ExactXSignOutlineLogoShape()
-				.fill(
-					LinearGradient(
-						colors: [
-							Color(red: 0.00, green: 0.28, blue: 0.60),
-							Color(red: 0.01, green: 0.18, blue: 0.42)
-						],
-						startPoint: .topLeading,
-						endPoint: .bottomTrailing
-					)
-				)
-				.frame(width: 210, height: 210)
-				.opacity(min(1.0, Double(progress) * 1.2))
+			// الخط الخارجي الأبيض الصافي الحاد الذي يرسم تفاصيل الشعار
+			Group {
+				PhotoIdenticalLeftThickArm()
+					.trim(from: 0, to: progress)
+					.stroke(Color.white, style: StrokeStyle(lineWidth: 4.8, lineCap: .round, lineJoin: .miter, miterLimit: 14))
+				PhotoIdenticalFirstSlash()
+					.trim(from: 0, to: progress)
+					.stroke(Color.white, style: StrokeStyle(lineWidth: 4.8, lineCap: .round, lineJoin: .miter, miterLimit: 14))
+				PhotoIdenticalSecondSlash()
+					.trim(from: 0, to: progress)
+					.stroke(Color.white, style: StrokeStyle(lineWidth: 4.8, lineCap: .round, lineJoin: .miter, miterLimit: 14))
+			}
+			.frame(width: 230, height: 230)
+			.shadow(color: Color.white.opacity(0.85 * glow), radius: 14, x: 0, y: 0)
 		}
 	}
 }
 
-struct XSignExactLaunchSplashView: View {
+struct XSignPhotoIdenticalSplashView: View {
 	@ObservedObject var cache: AppStoreCacheManager
 	@ObservedObject var sourcesViewModel: SourcesViewModel
 	var onFinished: () -> Void
@@ -281,50 +290,42 @@ struct XSignExactLaunchSplashView: View {
 	
 	@State private var drawProgress: CGFloat = 0.0
 	@State private var glowOpacity: Double = 0.2
-	@State private var scaleValue: CGFloat = 0.86
-	@State private var depthAngle: Double = 14.0
+	@State private var scaleValue: CGFloat = 0.88
 	@State private var didFinishMinimumAnimation = false
 	@State private var didDismiss = false
 	
 	var body: some View {
 		ZStack {
-			// الخلفية البحرية الكحلية الداكنة المستوحاة من صورتك
+			// الخلفية الزرقاء الملكية الصافية من صورتك (#00337A إلى أسود)
 			LinearGradient(
 				colors: [
-					Color(red: 0.00, green: 0.15, blue: 0.38),
-					Color.black
+					Color(red: 0.00, green: 0.20, blue: 0.48),
+					Color(red: 0.00, green: 0.08, blue: 0.24)
 				],
 				startPoint: .top,
 				endPoint: .bottom
 			)
 			.ignoresSafeArea()
 			
-			// هالة زرقاء متوهجة ناعمة
 			Circle()
 				.fill(
 					RadialGradient(
 						colors: [
 							Color.white.opacity(0.18 * glowOpacity),
-							Color(red: 0.0, green: 0.42, blue: 0.88).opacity(0.25 * glowOpacity),
+							Color(red: 0.0, green: 0.48, blue: 0.95).opacity(0.28 * glowOpacity),
 							.clear
 						],
 						center: .center,
 						startRadius: 10,
-						endRadius: 230
+						endRadius: 240
 					)
 				)
-				.frame(width: 400, height: 400)
+				.frame(width: 420, height: 420)
 			
-			ExactXSignRenderView(progress: drawProgress, glow: glowOpacity)
-				.rotation3DEffect(
-					.degrees(depthAngle),
-					axis: (x: 0.2, y: -0.25, z: 0.0),
-					perspective: 0.4
-				)
+			PhotoIdenticalXVectorView(progress: drawProgress, glow: glowOpacity)
 				.scaleEffect(scaleValue)
 		}
 		.task {
-			// تسريع تحميل وقراءة السورسات بأقصى أولوية معالجة في الخلفية
 			await cache.ensureFetched(sources: _sources, viewModel: sourcesViewModel)
 			checkIfReadyToDismiss()
 		}
@@ -337,14 +338,13 @@ struct XSignExactLaunchSplashView: View {
 	}
 	
 	private func startDrawing() {
-		withAnimation(.easeInOut(duration: 1.85)) {
+		withAnimation(.easeInOut(duration: 1.8)) {
 			drawProgress = 1.0
 			scaleValue = 1.0
-			depthAngle = 0.0
 			glowOpacity = 1.0
 		}
 		
-		DispatchQueue.main.asyncAfter(deadline: .now() + 2.1) {
+		DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
 			didFinishMinimumAnimation = true
 			checkIfReadyToDismiss()
 			
@@ -354,8 +354,7 @@ struct XSignExactLaunchSplashView: View {
 			}
 		}
 		
-		// حد أمان 4 ثوانٍ
-		DispatchQueue.main.asyncAfter(deadline: .now() + 4.2) {
+		DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
 			dismissSplash()
 		}
 	}
