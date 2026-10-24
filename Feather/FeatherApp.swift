@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import CoreData
 import Nuke
 import IDeviceSwift
 import OSLog
@@ -18,21 +17,14 @@ struct FeatherApp: App {
 	let heartbeat = HeartbeatManager.shared
 	
 	@StateObject var downloadManager = DownloadManager.shared
-	@StateObject private var storeCache = AppStoreCacheManager.shared
-	@StateObject private var sourcesViewModel = SourcesViewModel.shared
 	let storage = Storage.shared
 	
-	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	@State private var _showSplash = true
-	
-	private var activeTintColor: Color {
-		Color(hex: userTintHex)
-	}
 	
 	var body: some Scene {
 		WindowGroup {
 			ZStack {
-				VStack(spacing: 0) {
+				VStack {
 					DownloadHeaderView(downloadManager: downloadManager)
 						.transition(.move(edge: .top).combined(with: .opacity))
 					VariedTabbarView()
@@ -40,15 +32,10 @@ struct FeatherApp: App {
 						.onOpenURL(perform: _handleURL)
 						.transition(.move(edge: .top).combined(with: .opacity))
 				}
-				.tint(activeTintColor)
-				.accentColor(activeTintColor)
 				.animation(.smooth, value: downloadManager.manualDownloads.description)
 				
 				if _showSplash {
-					XSignLaunchSplashView(
-						cache: storeCache,
-						sourcesViewModel: sourcesViewModel
-					) {
+					XSignLaunchSplashView {
 						withAnimation(.easeInOut(duration: 0.55)) {
 							_showSplash = false
 						}
@@ -56,10 +43,6 @@ struct FeatherApp: App {
 					.transition(.opacity)
 					.zIndex(999)
 				}
-			}
-			.preferredColorScheme(.dark)
-			.onChange(of: userTintHex) { newHex in
-				UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: newHex))
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .heartbeatInvalidHost)) { _ in
 				DispatchQueue.main.async {
@@ -70,13 +53,11 @@ struct FeatherApp: App {
 				}
 			}
 			.onAppear {
-				if UserDefaults.standard.string(forKey: "Feather.userTintColor") == nil {
-					UserDefaults.standard.set("#005BBB", forKey: "Feather.userTintColor")
-				}
 				if let style = UIUserInterfaceStyle(rawValue: UserDefaults.standard.integer(forKey: "Feather.userInterfaceStyle")) {
 					UIApplication.topViewController()?.view.window?.overrideUserInterfaceStyle = style
 				}
-				UIApplication.topViewController()?.view.window?.tintColor = UIColor(activeTintColor)
+				
+				UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: UserDefaults.standard.string(forKey: "Feather.userTintColor") ?? "#848ef9"))
 			}
 		}
 	}
@@ -175,173 +156,103 @@ struct FeatherApp: App {
 	}
 }
 
-// MARK: - Pure 3D White "X" Splash Screen (Stays Until Apps Are Loaded)
-struct X3DRibbonShape: Shape {
-	let firstStroke: Bool
-	
+// MARK: - Animated Slow-Drawing "X" Splash Screen
+struct XLetterShape: Shape {
 	func path(in rect: CGRect) -> Path {
 		var path = Path()
 		let inset: CGFloat = rect.width * 0.14
-		if firstStroke {
-			path.move(to: CGPoint(x: inset, y: inset))
-			path.addLine(to: CGPoint(x: rect.width - inset, y: rect.height - inset))
-		} else {
-			path.move(to: CGPoint(x: rect.width - inset, y: inset))
-			path.addLine(to: CGPoint(x: inset, y: rect.height - inset))
-		}
+		// الضلع الأول من اليسار العلوي إلى اليمين السفلي
+		path.move(to: CGPoint(x: inset, y: inset))
+		path.addLine(to: CGPoint(x: rect.width - inset, y: rect.height - inset))
+		// الضلع الثاني من اليمين العلوي إلى اليسار السفلي
+		path.move(to: CGPoint(x: rect.width - inset, y: inset))
+		path.addLine(to: CGPoint(x: inset, y: rect.height - inset))
 		return path
 	}
 }
 
 struct XSignLaunchSplashView: View {
-	@ObservedObject var cache: AppStoreCacheManager
-	@ObservedObject var sourcesViewModel: SourcesViewModel
 	var onFinished: () -> Void
 	
-	@FetchRequest(
-		entity: AltSource.entity(),
-		sortDescriptors: [NSSortDescriptor(keyPath: \AltSource.name, ascending: true)]
-	) private var _sources: FetchedResults<AltSource>
-	
-	@State private var strokeOneProgress: CGFloat = 0.0
-	@State private var strokeTwoProgress: CGFloat = 0.0
-	@State private var depthTilt: Double = 14.0
-	@State private var scaleValue: CGFloat = 0.86
-	@State private var glowIntensity: Double = 0.2
-	@State private var didFinishMinimumAnimation = false
-	@State private var didDismiss = false
+	@State private var drawProgress: CGFloat = 0.0
+	@State private var glowOpacity: Double = 0.0
+	@State private var subtitleOpacity: Double = 0.0
+	@State private var scaleEffectValue: CGFloat = 0.92
 	
 	var body: some View {
 		ZStack {
 			Color.black.ignoresSafeArea()
 			
+			// إضاءة خلفية ناعمة خلف حرف X
 			Circle()
 				.fill(
 					RadialGradient(
-						colors: [
-							Color.white.opacity(0.14 * glowIntensity),
-							Color(red: 0.0, green: 0.36, blue: 0.73).opacity(0.18 * glowIntensity),
-							.clear
-						],
+						colors: [Color.blue.opacity(0.28), Color.indigo.opacity(0.10), .clear],
 						center: .center,
-						startRadius: 4,
-						endRadius: 200
+						startRadius: 10,
+						endRadius: 180
 					)
 				)
-				.frame(width: 360, height: 360)
+				.frame(width: 340, height: 340)
+				.opacity(glowOpacity)
 			
-			ZStack {
+			VStack(spacing: 28) {
 				ZStack {
-					X3DRibbonShape(firstStroke: true)
-						.trim(from: 0, to: strokeOneProgress)
+					// مسار خلفي خافت لحرف X
+					XLetterShape()
 						.stroke(
-							Color(white: 0.22),
-							style: StrokeStyle(lineWidth: 24, lineCap: .round)
+							Color.white.opacity(0.08),
+							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
 						)
-					X3DRibbonShape(firstStroke: false)
-						.trim(from: 0, to: strokeTwoProgress)
+						.frame(width: 130, height: 130)
+					
+					// رسم حرف X تدريجياً ببطء وأناقة
+					XLetterShape()
+						.trim(from: 0.0, to: drawProgress)
 						.stroke(
-							Color(white: 0.22),
-							style: StrokeStyle(lineWidth: 24, lineCap: .round)
+							LinearGradient(
+								colors: [
+									Color.white,
+									Color(red: 0.35, green: 0.68, blue: 1.0),
+									Color(red: 0.20, green: 0.45, blue: 0.98)
+								],
+								startPoint: .topLeading,
+								endPoint: .bottomTrailing
+							),
+							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
 						)
+						.frame(width: 130, height: 130)
+						.shadow(color: Color.blue.opacity(0.65), radius: 16, x: 0, y: 0)
 				}
-				.frame(width: 148, height: 148)
-				.offset(x: 5, y: 7)
-				.blur(radius: 3)
+				.scaleEffect(scaleEffectValue)
 				
-				X3DRibbonShape(firstStroke: true)
-					.trim(from: 0, to: strokeOneProgress)
-					.stroke(
-						LinearGradient(
-							colors: [
-								Color.white,
-								Color(white: 0.88),
-								Color.white
-							],
-							startPoint: .topLeading,
-							endPoint: .bottomTrailing
-						),
-						style: StrokeStyle(lineWidth: 20, lineCap: .round)
-					)
-					.frame(width: 148, height: 148)
-					.shadow(color: .black.opacity(0.65), radius: 8, x: 3, y: 5)
-				
-				X3DRibbonShape(firstStroke: false)
-					.trim(from: 0, to: strokeTwoProgress)
-					.stroke(
-						LinearGradient(
-							colors: [
-								Color.white,
-								Color(white: 0.94),
-								Color(white: 0.82),
-								Color.white
-							],
-							startPoint: .topTrailing,
-							endPoint: .bottomLeading
-						),
-						style: StrokeStyle(lineWidth: 20, lineCap: .round)
-					)
-					.frame(width: 148, height: 148)
-					.shadow(color: .black.opacity(0.75), radius: 10, x: -2, y: 4)
-					.shadow(color: .white.opacity(0.55 * glowIntensity), radius: 16, x: 0, y: 0)
+				VStack(spacing: 8) {
+					Text("X-SIGN")
+						.font(.system(size: 22, weight: .heavy, design: .rounded))
+						.tracking(4)
+						.foregroundStyle(.white)
+					
+					Text("جاري تجهيز المتجر والتطبيقات...")
+						.font(.system(size: 13, weight: .medium))
+						.foregroundStyle(.secondary)
+				}
+				.opacity(subtitleOpacity)
 			}
-			.rotation3DEffect(
-				.degrees(depthTilt),
-				axis: (x: 0.25, y: -0.35, z: 0.0),
-				perspective: 0.45
-			)
-			.scaleEffect(scaleValue)
-		}
-		.task {
-			await cache.ensureFetched(sources: _sources, viewModel: sourcesViewModel)
-			checkIfReadyToDismiss()
-		}
-		.onChange(of: cache.allCombinedItems.count) { _ in
-			checkIfReadyToDismiss()
 		}
 		.onAppear {
-			startSlow3DDrawing()
-		}
-	}
-	
-	private func startSlow3DDrawing() {
-		withAnimation(.easeInOut(duration: 1.35)) {
-			strokeOneProgress = 1.0
-			scaleValue = 0.95
-		}
-		withAnimation(.easeInOut(duration: 1.45).delay(1.15)) {
-			strokeTwoProgress = 1.0
-			depthTilt = 0.0
-			scaleValue = 1.0
-			glowIntensity = 1.0
-		}
-		
-		DispatchQueue.main.asyncAfter(deadline: .now() + 2.65) {
-			didFinishMinimumAnimation = true
-			checkIfReadyToDismiss()
-			
-			withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-				glowIntensity = 0.45
-				scaleValue = 0.97
+			// رسم بطيء وسلس لحرف X يستغرق 2.3 ثانية حتى تتحمل التطبيقات في الخلفية
+			withAnimation(.easeInOut(duration: 2.3)) {
+				drawProgress = 1.0
+				scaleEffectValue = 1.0
+			}
+			withAnimation(.easeIn(duration: 1.2).delay(0.3)) {
+				glowOpacity = 1.0
+				subtitleOpacity = 1.0
+			}
+			DispatchQueue.main.asyncAfter(deadline: .now() + 2.85) {
+				onFinished()
 			}
 		}
-		
-		DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) {
-			dismissSplash()
-		}
-	}
-	
-	private func checkIfReadyToDismiss() {
-		guard didFinishMinimumAnimation else { return }
-		if !cache.ipablackItems.isEmpty || !cache.allCombinedItems.isEmpty {
-			dismissSplash()
-		}
-	}
-	
-	private func dismissSplash() {
-		guard !didDismiss else { return }
-		didDismiss = true
-		onFinished()
 	}
 }
 
@@ -354,7 +265,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		_createDocumentsDirectories()
 		ResetView.clearWorkCache()
 		_addDefaultCertificates()
-		_configureProtectedCoreSources()
 		return true
 	}
 	
@@ -396,53 +306,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		}
 	}
 	
-	private func _configureProtectedCoreSources() {
-		let context = Storage.shared.context
-		context.perform {
-			let request = NSFetchRequest<AltSource>(entityName: "AltSource")
-			let existingSources = (try? context.fetch(request)) ?? []
-			
-			// إزالة AppTesters نهائياً في أي وقت يُكتشف فيه، ومسح السورسات الافتراضية القديمة
-			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v4"
-			for source in existingSources {
-				let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
-				let idStr = source.identifier?.lowercased() ?? ""
-				if urlStr.contains("apptesters") || idStr.contains("apptesters") {
-					context.delete(source)
-				} else if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
-					if !urlStr.contains("/ipablack/") && !urlStr.contains("store-api") {
-						context.delete(source)
-					}
-				}
-			}
-			UserDefaults.standard.set(true, forKey: purgedOnceKey)
-			
-			// حقن السورسين الأساسيين المعتمدين: IPABLACK + store-api
-			let coreRepos: [(name: String, id: String, url: String)] = [
-				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"),
-				("IPA BLACK Store", "xsign.core.storeapi", "https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json")
-			]
-			
-			let updatedExisting = (try? context.fetch(request)) ?? []
-			for repo in coreRepos {
-				guard let repoURL = URL(string: repo.url) else { continue }
-				let alreadyExists = updatedExisting.contains {
-					$0.sourceURL?.absoluteString.lowercased() == repo.url.lowercased() ||
-					$0.identifier == repo.id
-				}
-				if !alreadyExists {
-					let newSource = AltSource(context: context)
-					newSource.name = repo.name
-					newSource.identifier = repo.id
-					newSource.sourceURL = repoURL
-					newSource.date = Date()
-				}
-			}
-			
-			try? context.save()
-		}
-	}
-	
 	private func _addDefaultCertificates() {
 		guard
 			UserDefaults.standard.bool(forKey: "feather.didImportDefaultCertificates") == false,
@@ -480,7 +343,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				
 				FR.handleCertificateFiles(
 					p12URL: p12Url,
-					provisionURL: provisionUrl,
+					provisionURL: provisionURL,
 					p12Password: password,
 					certificateName: certName,
 					isDefault: true
