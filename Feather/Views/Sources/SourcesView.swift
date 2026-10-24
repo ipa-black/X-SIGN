@@ -61,6 +61,7 @@ struct AppleStoreRichMetadata: Codable, Sendable {
 	let genre: String?
 	let contentRating: String?
 	let rating: Double?
+	let fileSizeBytes: Int64?
 }
 
 actor AppStoreLiveMetadataBridge {
@@ -71,15 +72,13 @@ actor AppStoreLiveMetadataBridge {
 	
 	private nonisolated static var diskCacheDir: URL {
 		let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-			.appendingPathComponent("XSignAppleMetadataCache_v2", isDirectory: true)
+			.appendingPathComponent("XSignAppleMetadataCache_v3", isDirectory: true)
 		try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 		return url
 	}
 	
-	// تنظيف اسم التطبيق من إضافات التعديل مثل Hack, Public, Mod وفصل الحروف الملتصقة للبحث الدقيق في أبل ستور
 	nonisolated static func cleanSearchTitle(_ rawTitle: String) -> String {
 		var text = rawTitle
-		// فصل الكلمات الملتصقة مثل EasyAnatomy3DPublic -> Easy Anatomy 3D Public
 		text = text.replacingOccurrences(
 			of: "([a-z])([A-Z])",
 			with: "$1 $2",
@@ -91,7 +90,6 @@ actor AppStoreLiveMetadataBridge {
 			options: .regularExpression
 		)
 		
-		// إزالة الرموز والإيموجي وكلمات التهكير
 		let noiseWords = [
 			"hack", "mod", "public", "cracked", "vip", "cheat", "cheats",
 			"tweaked", "tweak", "ipa", "free", "unlocked", "infinite",
@@ -99,7 +97,6 @@ actor AppStoreLiveMetadataBridge {
 			"نسخة", "معدلة", "ومحدثة", "مهكرة", "تهكير", "بلس"
 		]
 		
-		// حذف الرموز غير الحرفية
 		text = text.replacingOccurrences(
 			of: "[^\\p{L}\\p{N}\\s]+",
 			with: " ",
@@ -138,17 +135,14 @@ actor AppStoreLiveMetadataBridge {
 		}
 		
 		let task = Task<AppleStoreRichMetadata?, Never> {
-			// المرحلة 1: البحث بمعرف الحزمة الرسمي إن لم يكن معدلاً بأرقام عشوائية
 			if let bID = bundleID, bID.contains("."), !bID.hasPrefix("games.") {
 				if let found = await Self.queryiTunes(urlString: "https://itunes.apple.com/lookup?bundleId=\(bID)&country=US") {
 					return found
 				}
 			}
 			
-			// المرحلة 2: البحث الذكي باسم التطبيق المنظّف في متجر آبل (يجد جميع الألعاب والتطبيقات المعدلة 100%)
 			let cleanedName = Self.cleanSearchTitle(appName)
 			if let encoded = cleanedName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-				// نحاول أولاً بالمتجر العربي للحصول على وصف عربي إن توفر، ثم المتجر الأمريكي
 				if let foundAR = await Self.queryiTunes(urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=SA"),
 				   !foundAR.screenshots.isEmpty {
 					return foundAR
@@ -199,6 +193,13 @@ actor AppStoreLiveMetadataBridge {
 			let contentRating = first["trackContentRating"] as? String
 			let rating = first["averageUserRating"] as? Double
 			
+			var parsedBytes: Int64? = nil
+			if let sizeStr = first["fileSizeBytes"] as? String, let b = Int64(sizeStr) {
+				parsedBytes = b
+			} else if let sizeNum = first["fileSizeBytes"] as? NSNumber {
+				parsedBytes = sizeNum.int64Value
+			}
+			
 			return AppleStoreRichMetadata(
 				screenshots: screenshots,
 				artworkURL: artworkURL,
@@ -207,7 +208,8 @@ actor AppStoreLiveMetadataBridge {
 				sellerName: sellerName,
 				genre: genre,
 				contentRating: contentRating,
-				rating: rating
+				rating: rating,
+				fileSizeBytes: parsedBytes
 			)
 		} catch {
 			return nil
@@ -292,7 +294,6 @@ enum AppStoreBilingualEngine {
 		return false
 	}
 	
-	// فلترة أي نص يحتوي على "Sources: flekstore" أو "unkeyapp" حتى لا يظهر للمستخدم أبداً
 	nonisolated static func isInternalSourceNote(_ text: String?) -> Bool {
 		guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
 			return true
@@ -1105,27 +1106,23 @@ struct AppStore2026DetailView: View {
 	}
 	
 	private var displayDeveloper: String {
-		if let dev = item.app.developerName,
-		   !dev.isEmpty,
-		   dev.lowercased() != "unknown",
-		   !dev.lowercased().contains("ipa black") {
-			return dev
+		if let seller = appleMetadata?.sellerName, !seller.isEmpty {
+			return seller
 		}
-		return appleMetadata?.sellerName ?? "IPA BLACK Official"
+		return "IPA BLACK Official"
 	}
 	
 	private var formattedSize: String {
-		let bytes = item.app.size ?? item.app.versions?.first?.size ?? 85_000_000
+		let bytes: Int64 = appleMetadata?.fileSizeBytes ?? 92_400_000
 		let formatter = ByteCountFormatter()
 		formatter.allowedUnits = [.useMB, .useGB]
 		formatter.countStyle = .file
-		return formatter.string(fromByteCount: Int64(bytes))
+		return formatter.string(fromByteCount: bytes)
 	}
 	
 	var body: some View {
 		ScrollView(.vertical, showsIndicators: false) {
 			VStack(alignment: .leading, spacing: 22) {
-				// 1. Header: Icon on Right, Title & Subtitle, Download Button
 				HStack(alignment: .top, spacing: 16) {
 					AppStoreIconView(
 						url: item.app.iconURL,
@@ -1159,7 +1156,6 @@ struct AppStore2026DetailView: View {
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
 				
-				// 2. Apple App Store Rating, Age, Chart & Size Strip
 				ScrollView(.horizontal, showsIndicators: false) {
 					HStack(spacing: 0) {
 						AppStoreStatBadge(
@@ -1197,7 +1193,6 @@ struct AppStore2026DetailView: View {
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
 				
-				// 3. Official App Store Screenshots Section ("معاينة")
 				VStack(alignment: .leading, spacing: 14) {
 					Text("معاينة")
 						.font(.system(size: 22, weight: .bold))
@@ -1249,7 +1244,6 @@ struct AppStore2026DetailView: View {
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
 				
-				// 4. What's New Section ("ما الجديد")
 				VStack(alignment: .leading, spacing: 10) {
 					HStack {
 						Text("ما الجديد")
@@ -1271,7 +1265,6 @@ struct AppStore2026DetailView: View {
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
 				
-				// 5. Full App Store Description ("الوصف")
 				VStack(alignment: .leading, spacing: 10) {
 					Text("الوصف")
 						.font(.system(size: 22, weight: .bold))
@@ -1298,7 +1291,6 @@ struct AppStore2026DetailView: View {
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
 				
-				// 6. Clean Apple Store Information Table ("المعلومات")
 				VStack(alignment: .leading, spacing: 14) {
 					Text("المعلومات")
 						.font(.system(size: 22, weight: .bold))
@@ -2037,7 +2029,6 @@ struct AppStoreAccountAppIconButton: View {
 					endPoint: .bottomTrailing
 				)
 				
-				// شعار X مصغر بدلاً من ريشة Feather
 				Text("X")
 					.font(.system(size: 19, weight: .black, design: .rounded))
 					.foregroundStyle(.white)
@@ -2054,7 +2045,7 @@ struct AppStoreAccountAppIconButton: View {
 	}
 }
 
-// MARK: - Authentic Apple App Store Today Cards (Strictly Bounded Width - Never Overflows!)
+// MARK: - Authentic Apple App Store Today Cards
 
 struct TodayLiveEventHeroCard: View {
 	let outerTitle: String?
@@ -2087,7 +2078,6 @@ struct TodayLiveEventHeroCard: View {
 			
 			VStack(spacing: 0) {
 				ZStack(alignment: .topLeading) {
-					// استخدام Color.clear.overlay لمنع الصور العريضة من توسيع البطاقة خارج الشاشة!
 					Color.clear
 						.frame(maxWidth: .infinity)
 						.frame(height: 350)
@@ -2342,7 +2332,7 @@ struct TodayTwoRowIconGridCard: View {
 				.overlay(
 					RoundedRectangle(cornerRadius: 28, style: .continuous)
 						.stroke(Color.white.opacity(0.10), lineWidth: 0.7)
-				)
+			)
 		}
 	}
 }
@@ -2429,7 +2419,6 @@ struct TodayFullArtworkDockCard: View {
 	
 	var body: some View {
 		VStack(spacing: 0) {
-			// مقفول العرض 100% حتى لا تتمدد البطاقة أفقياً بسبب الصور العريضة
 			Color.clear
 				.frame(maxWidth: .infinity)
 				.frame(height: 330)
