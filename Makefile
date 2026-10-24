@@ -39,8 +39,11 @@ $(PLATFORMS): deps
 	mkdir -p _build/Payload
 	cp -R _build/Applications/*.app _build/Payload/$(NAME).app || cp -R $(TMP)/$@/Build/Products/Release-iphoneos/*.app _build/Payload/$(NAME).app
 	
-	# Keep the XSign launch storyboard configured in the project and Info.plist.
-
+	# إزالة شاشة الريشة الافتراضية نهائياً ليبدأ التطبيق بشاشة X مباشرة
+	/usr/libexec/PlistBuddy -c "Delete :UILaunchScreen:UIImageName" _build/Payload/$(NAME).app/Info.plist || true
+	/usr/libexec/PlistBuddy -c "Delete :UILaunchStoryboardName" _build/Payload/$(NAME).app/Info.plist || true
+	/usr/libexec/PlistBuddy -c "Add :UILaunchScreen dict" _build/Payload/$(NAME).app/Info.plist || true
+	
 	chmod -R 0755 _build/Payload/$(NAME).app
 	codesign --force --sign - --timestamp=none _build/Payload/$(NAME).app || true
 	cp deps/* _build/Payload/$(NAME).app/ || true

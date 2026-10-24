@@ -35,7 +35,7 @@ struct DownloadButtonView: View {
 						.font(.footnote).bold()
 				}
 				.onTapGesture {
-					if currentDownload.state != .importing {
+					if downloadProgress <= 0.75 {
 						downloadManager.cancelDownload(currentDownload)
 					}
 				}

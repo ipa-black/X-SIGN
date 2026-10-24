@@ -44,43 +44,31 @@ final class ArchiveHandler: NSObject {
 		_payloadUrl = payloadUrl
 	}
 	
-    func archive() async throws -> URL {
-        try await Task.detached(priority: .utility) { [self] in
-            await XSignPackageWorkGate.shared.acquire()
-            do {
-                guard let payloadURL = self._payloadUrl else {
-                    throw SigningFileHandlerError.appNotFound
-                }
-                let zipURL = self._uniqueWorkDir.appendingPathComponent("Archive.zip")
-                let ipaURL = self._uniqueWorkDir.appendingPathComponent("Archive.ipa")
-                let compression = await MainActor.run {
-                    ZipCompression.allCases[max(
-                        0, min(ArchiveHandler.getCompressionLevel(), ZipCompression.allCases.count - 1)
-                    )]
-                }
-                var lastEmission: TimeInterval = 0
-                try Zip.zipFiles(
-                    paths: [payloadURL],
-                    zipFilePath: zipURL,
-                    password: nil,
-                    compression: compression,
-                    progress: { progress in
-                        let now = ProcessInfo.processInfo.systemUptime
-                        guard progress >= 1 || now - lastEmission >= 0.1 else { return }
-                        lastEmission = now
-                        Task { @MainActor in self.viewModel.packageProgress = progress }
-                    }
-                )
-                try FileManager.default.moveItem(at: zipURL, to: ipaURL)
-                await XSignPackageWorkGate.shared.release()
-                return ipaURL
-            } catch {
-                await XSignPackageWorkGate.shared.release()
-                throw error
-            }
-        }.value
-    }
-
+	func archive() async throws -> URL {
+		return try await Task.detached(priority: .background) { [self] in
+			guard let payloadUrl = await self._payloadUrl else {
+				throw SigningFileHandlerError.appNotFound
+			}
+			
+			let zipUrl = self._uniqueWorkDir.appendingPathComponent("Archive.zip")
+			let ipaUrl = self._uniqueWorkDir.appendingPathComponent("Archive.ipa")
+			
+			try await Zip.zipFiles(
+				paths: [payloadUrl],
+				zipFilePath: zipUrl,
+				password: nil,
+				compression: ZipCompression.allCases[ArchiveHandler.getCompressionLevel()],
+				progress: { progress in
+					Task { @MainActor in
+						self.viewModel.packageProgress = progress
+					}
+				})
+			
+			try FileManager.default.moveItem(at: zipUrl, to: ipaUrl)
+			return ipaUrl
+		}.value
+	}
+	
 	func moveToArchive(_ package: URL, shouldOpen: Bool = false) async throws -> URL? {
 		let appendingString = "\(_app.name!)_\(_app.version!)_\(Int(Date().timeIntervalSince1970)).ipa"
 		let dest = _fileManager.archives.appendingPathComponent(appendingString)

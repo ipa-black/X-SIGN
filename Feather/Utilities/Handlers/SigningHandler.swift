@@ -13,15 +13,11 @@ import OSLog
 final class SigningHandler: NSObject {
 	private let _fileManager = FileManager.default
 	private let _uuid = UUID().uuidString
-    var signedUUID: String { _uuid }
 	private var _movedAppPath: URL?
 	// using uuid string is the best way to find the
 	// app we want to sign, it does not matter what
 	// type of app it is
-	private let _appDirectory: URL?
-    private let _appUUID: String?
-    private let _appSource: URL?
-    private let _appIdentifier: String?
+	private var _app: AppInfoPresentable
 	private var _options: Options
 	private let _uniqueWorkDir: URL
 	// the options struct is not gonna decode these so
@@ -33,12 +29,8 @@ final class SigningHandler: NSObject {
 	var appIcon: UIImage?
 	var appCertificate: CertificatePair?
 	
-	@MainActor
-    init(app: AppInfoPresentable, options: Options = OptionsManager.shared.options) {
-		self._appDirectory = Storage.shared.getAppDirectory(for: app)
-        self._appUUID = app.uuid
-        self._appSource = app.source
-        self._appIdentifier = app.identifier
+	init(app: AppInfoPresentable, options: Options = OptionsManager.shared.options) {
+		self._app = app
 		self._options = options
 		self._uniqueWorkDir = _fileManager.temporaryDirectory
 			.appendingPathComponent("FeatherSigning_\(_uuid)", isDirectory: true)
@@ -46,7 +38,7 @@ final class SigningHandler: NSObject {
 	}
 	
 	func copy() async throws {
-		guard let appUrl = _appDirectory else {
+		guard let appUrl = Storage.shared.getAppDirectory(for: _app) else {
 			throw SigningFileHandlerError.appNotFound
 		}
 
@@ -131,9 +123,12 @@ final class SigningHandler: NSObject {
 			throw SigningFileHandlerError.missingCertifcate
 		}
 		
-        if let error = handler.hadError { throw error }
-        try await self.move()
-        try await self.addToDatabase()
+		try await self.move()
+		try await self.addToDatabase()
+		
+		if let error = handler.hadError {
+			throw error
+		}
 	}
 	
 	func move() async throws {
@@ -153,33 +148,37 @@ final class SigningHandler: NSObject {
 		try? _fileManager.removeItem(at: _uniqueWorkDir)
 	}
 	
-    func addToDatabase() async throws {
-        let directory = try await _directory()
-        guard let appURL = _fileManager.getPath(in: directory, for: "app") else {
-            throw SigningFileHandlerError.appNotFound
-        }
-        let bundle = Bundle(url: appURL)
-        let name = bundle?.name
-        let identifier = bundle?.bundleIdentifier
-        let version = bundle?.version
-        let icon = bundle?.iconFileName
-        try await MainActor.run {
-            var insertionError: Error?
-            Storage.shared.addSigned(
-                uuid: _uuid,
-                source: _appSource,
-                certificate: _options.signingOption != .default ? nil : appCertificate,
-                appName: name,
-                appIdentifier: identifier,
-                appVersion: version,
-                appIcon: icon
-            ) { insertionError = $0 }
-            if let insertionError { throw insertionError }
-            Storage.shared.copySourceMetadata(from: _appUUID, to: _uuid, kind: .signed)
-            if Storage.shared.context.hasChanges { try Storage.shared.context.save() }
-        }
-    }
-
+	func addToDatabase() async throws {
+		let app = try await _directory()
+		
+		guard let appUrl = _fileManager.getPath(in: app, for: "app") else {
+			return
+		}
+		
+		await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+			let bundle = Bundle(url: appUrl)
+			
+			Storage.shared.addSigned(
+				uuid: _uuid,
+				source: _app.source,
+				certificate: _options.signingOption != .default ? nil : appCertificate,
+				appName: bundle?.name,
+				appIdentifier: bundle?.bundleIdentifier,
+				appVersion: bundle?.version,
+				appIcon: bundle?.iconFileName
+			) { _ in
+				Logger.signing.info("[\(self._uuid)] Added to database")
+				continuation.resume()
+			}
+		}
+		
+		Storage.shared.copySourceMetadata(
+			from: _app.uuid,
+			to: _uuid,
+			kind: .signed
+		)
+	}
+	
 	private func _directory() async throws -> URL {
 		// Documents/Feather/Signed/\(UUID)
 		_fileManager.signed(_uuid)
@@ -452,17 +451,15 @@ extension SigningHandler {
 			return
 		}
 		
-		let provisionURL = await MainActor.run {
-            appCertificate.flatMap { Storage.shared.getFile(.provision, from: $0) }
-        }
-        guard
-            let ourEntitlements = CertificateReader(provisionURL).decoded
+		guard 
+			let cert = self.appCertificate, 
+			let ourEntitlements = CertificateReader(Storage.shared.getFile(.provision, from: cert)).decoded
 		else {
 			return 
 		}
 		
 		let ourTeamIdentifier = ourEntitlements.TeamIdentifier[0]
-		let ourBundleIdentifer = options.appIdentifier ?? _appIdentifier
+		let ourBundleIdentifer = options.appIdentifier ?? _app.identifier
 		
 		var baseDictionary: [String: Any] = (ourEntitlements.Entitlements ?? [:]).mapValues { $0.value }
 		let additionsDictionary: [String: Any] = binaryEntitlementsDict

@@ -25,7 +25,7 @@ struct SourceNewsCardInfoView: View {
 						}()
 						
 						if let iconURL = new.imageURL {
-							LazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 1024)) { state in
+							LazyImage(url: iconURL) { state in
 								if let image = state.image {
 									Color.clear.overlay(
 										image

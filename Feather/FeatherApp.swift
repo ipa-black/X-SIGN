@@ -24,7 +24,7 @@ struct FeatherApp: App {
 	var body: some Scene {
 		WindowGroup {
 			ZStack {
-				VStack(spacing: 0) {
+				VStack {
 					DownloadHeaderView(downloadManager: downloadManager)
 						.transition(.move(edge: .top).combined(with: .opacity))
 					VariedTabbarView()
@@ -32,11 +32,11 @@ struct FeatherApp: App {
 						.onOpenURL(perform: _handleURL)
 						.transition(.move(edge: .top).combined(with: .opacity))
 				}
-				.animation(.easeInOut(duration: 0.2), value: downloadManager.manualDownloads.count)
+				.animation(.smooth, value: downloadManager.manualDownloads.description)
 				
 				if _showSplash {
 					XSignLaunchSplashView {
-						withAnimation(.easeOut(duration: 0.18)) {
+						withAnimation(.easeInOut(duration: 0.55)) {
 							_showSplash = false
 						}
 					}
@@ -145,7 +145,7 @@ struct FeatherApp: App {
 			if url.pathExtension == "ipa" || url.pathExtension == "tipa" {
 				if FileManager.default.isFileFromFileProvider(at: url) {
 					guard url.startAccessingSecurityScopedResource() else { return }
-                    FR.handlePackageFile(url) { _ in url.stopAccessingSecurityScopedResource() }
+					FR.handlePackageFile(url) { _ in }
 				} else {
 					FR.handlePackageFile(url) { _ in }
 				}
@@ -156,31 +156,104 @@ struct FeatherApp: App {
 	}
 }
 
-// MARK: - Exact launch artwork, shared with the system launch storyboard
-struct XSignLaunchSplashView: View {
-    var onFinished: () -> Void
+// MARK: - Animated Slow-Drawing "X" Splash Screen
+struct XLetterShape: Shape {
+	func path(in rect: CGRect) -> Path {
+		var path = Path()
+		let inset: CGFloat = rect.width * 0.14
+		// الضلع الأول من اليسار العلوي إلى اليمين السفلي
+		path.move(to: CGPoint(x: inset, y: inset))
+		path.addLine(to: CGPoint(x: rect.width - inset, y: rect.height - inset))
+		// الضلع الثاني من اليمين العلوي إلى اليسار السفلي
+		path.move(to: CGPoint(x: rect.width - inset, y: inset))
+		path.addLine(to: CGPoint(x: inset, y: rect.height - inset))
+		return path
+	}
+}
 
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Color(red: 0, green: 49.0 / 255.0, blue: 115.0 / 255.0)
-                Image("XSignLaunch")
-                    .resizable()
-                    .renderingMode(.original)
-                    .scaledToFit()
-                    .frame(width: min(320, geometry.size.width * 0.82))
-                    .accessibilityLabel("XSign")
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .ignoresSafeArea()
-        .task {
-            // No timer or network dependency holds the launch screen open.
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            onFinished()
-        }
-    }
+struct XSignLaunchSplashView: View {
+	var onFinished: () -> Void
+	
+	@State private var drawProgress: CGFloat = 0.0
+	@State private var glowOpacity: Double = 0.0
+	@State private var subtitleOpacity: Double = 0.0
+	@State private var scaleEffectValue: CGFloat = 0.92
+	
+	var body: some View {
+		ZStack {
+			Color.black.ignoresSafeArea()
+			
+			// إضاءة خلفية ناعمة خلف حرف X
+			Circle()
+				.fill(
+					RadialGradient(
+						colors: [Color.blue.opacity(0.28), Color.indigo.opacity(0.10), .clear],
+						center: .center,
+						startRadius: 10,
+						endRadius: 180
+					)
+				)
+				.frame(width: 340, height: 340)
+				.opacity(glowOpacity)
+			
+			VStack(spacing: 28) {
+				ZStack {
+					// مسار خلفي خافت لحرف X
+					XLetterShape()
+						.stroke(
+							Color.white.opacity(0.08),
+							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
+						)
+						.frame(width: 130, height: 130)
+					
+					// رسم حرف X تدريجياً ببطء وأناقة
+					XLetterShape()
+						.trim(from: 0.0, to: drawProgress)
+						.stroke(
+							LinearGradient(
+								colors: [
+									Color.white,
+									Color(red: 0.35, green: 0.68, blue: 1.0),
+									Color(red: 0.20, green: 0.45, blue: 0.98)
+								],
+								startPoint: .topLeading,
+								endPoint: .bottomTrailing
+							),
+							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
+						)
+						.frame(width: 130, height: 130)
+						.shadow(color: Color.blue.opacity(0.65), radius: 16, x: 0, y: 0)
+				}
+				.scaleEffect(scaleEffectValue)
+				
+				VStack(spacing: 8) {
+					Text("X-SIGN")
+						.font(.system(size: 22, weight: .heavy, design: .rounded))
+						.tracking(4)
+						.foregroundStyle(.white)
+					
+					Text("جاري تجهيز المتجر والتطبيقات...")
+						.font(.system(size: 13, weight: .medium))
+						.foregroundStyle(.secondary)
+				}
+				.opacity(subtitleOpacity)
+			}
+		}
+		.onAppear {
+			// رسم بطيء وسلس لحرف X يستغرق 2.3 ثانية حتى تتحمل التطبيقات في الخلفية
+			withAnimation(.easeInOut(duration: 2.3)) {
+				drawProgress = 1.0
+				scaleEffectValue = 1.0
+			}
+			withAnimation(.easeIn(duration: 1.2).delay(0.3)) {
+				glowOpacity = 1.0
+				subtitleOpacity = 1.0
+			}
+			DispatchQueue.main.asyncAfter(deadline: .now() + 2.85) {
+				onFinished()
+			}
+		}
+	}
 }
 
 class AppDelegate: NSObject, UIApplicationDelegate {
@@ -195,41 +268,29 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		return true
 	}
 	
-    private func _createPipeline() {
-        let memoryLimit = Int(min(
-            UInt64(48 * 1024 * 1024),
-            max(UInt64(24 * 1024 * 1024), ProcessInfo.processInfo.physicalMemory / 128)
-        ))
-        let pipeline = ImagePipeline {
-            let config = URLSessionConfiguration.default
-            config.urlCache = nil
-            config.httpMaximumConnectionsPerHost = 4
-            config.timeoutIntervalForRequest = 30
-            $0.dataLoader = DataLoader(configuration: config)
-
-            let diskCache = try? DataCache(name: "thewonderofyou.Feather.datacache")
-            diskCache?.sizeLimit = 200 * 1024 * 1024
-            let memoryCache = Nuke.ImageCache()
-            memoryCache.costLimit = memoryLimit
-
-            $0.dataCache = diskCache
-            $0.imageCache = memoryCache
-            $0.dataCachePolicy = .automatic
-            $0.isStoringPreviewsInMemoryCache = false
-            $0.isProgressiveDecodingEnabled = false
-            $0.isTaskCoalescingEnabled = true
-            $0.dataLoadingQueue.maxConcurrentOperationCount = 4
-            $0.imageDecodingQueue.maxConcurrentOperationCount = 1
-            $0.imageProcessingQueue.maxConcurrentOperationCount = 2
-        }
-        ImagePipeline.shared = pipeline
-    }
-
-    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
-        (ImagePipeline.shared.configuration.imageCache as? Nuke.ImageCache)?.removeAll()
-        FRIconCache.shared.invalidateAll()
-    }
-
+	private func _createPipeline() {
+		DataLoader.sharedUrlCache.diskCapacity = 0
+		
+		let pipeline = ImagePipeline {
+			let dataLoader: DataLoader = {
+				let config = URLSessionConfiguration.default
+				config.urlCache = nil
+				return DataLoader(configuration: config)
+			}()
+			let dataCache = try? DataCache(name: "thewonderofyou.Feather.datacache")
+			let imageCache = Nuke.ImageCache()
+			dataCache?.sizeLimit = 500 * 1024 * 1024
+			imageCache.costLimit = 100 * 1024 * 1024
+			$0.dataCache = dataCache
+			$0.imageCache = imageCache
+			$0.dataLoader = dataLoader
+			$0.dataCachePolicy = .automatic
+			$0.isStoringPreviewsInMemoryCache = false
+		}
+		
+		ImagePipeline.shared = pipeline
+	}
+	
 	private func _createDocumentsDirectories() {
 		let fileManager = FileManager.default
 
@@ -282,7 +343,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				
 				FR.handleCertificateFiles(
 					p12URL: p12Url,
-					provisionURL: provisionUrl,
+					provisionURL: provisionURL,
 					p12Password: password,
 					certificateName: certName,
 					isDefault: true
