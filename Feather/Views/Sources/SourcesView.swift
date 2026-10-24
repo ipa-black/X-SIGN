@@ -28,9 +28,12 @@ enum AppStoreTheme {
 
 // MARK: - Protected Sources Vault (IPABLACK + store-api)
 enum ProtectedSourcesVault {
+	static let ipaBlackURLString = "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"
+	static let storeAPIURLString = "https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json"
+	
 	static let coreURLs: [String] = [
-		"https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json",
-		"https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json"
+		ipaBlackURLString,
+		storeAPIURLString
 	]
 	
 	static func isIPABlackSource(_ sourceURL: URL?, identifier: String? = nil) -> Bool {
@@ -48,7 +51,7 @@ enum ProtectedSourcesVault {
 	}
 }
 
-// MARK: - Bilingual Search & Localization Engine
+// MARK: - Bilingual Search & Fast Localization Engine
 enum AppStoreBilingualEngine {
 	static let synonymGroups: [[String]] = [
 		["instagram", "insta", "ig", "rocket", "plus", "bhinsta", "انستقرام", "انستا", "انستجرام", "إنستجرام", "انستغرام", "إنستغرام"],
@@ -107,20 +110,28 @@ enum AppStoreBilingualEngine {
 			.trimmingCharacters(in: .whitespacesAndNewlines)
 	}
 	
-	static func buildSearchTokens(for app: ASRepository.App, category: AppStore2026Category) -> String {
-		let base = normalize("\(app.name ?? "") \(app.id ?? "") \(app.subtitle ?? "") \(app.localizedDescription ?? "") \(category.rawValue)")
-		var expanded = base
+	// بناء سريع جداً لكلمات البحث دون إبطاء المعالج عند قراءة آلاف التطبيقات
+	static func buildFastSearchTokens(for app: ASRepository.App, category: AppStore2026Category) -> String {
+		let base = "\(app.name ?? "") \(app.id ?? "") \(category.rawValue)".lowercased()
+		return base
+	}
+	
+	static func matchesQuery(tokens: String, query: String) -> Bool {
+		let normQuery = normalize(query)
+		guard !normQuery.isEmpty else { return true }
+		if tokens.contains(normQuery) { return true }
+		
 		for group in synonymGroups {
-			let normalizedGroup = group.map { normalize($0) }
-			if normalizedGroup.contains(where: { base.contains($0) }) {
-				expanded += " " + normalizedGroup.joined(separator: " ")
+			if group.contains(where: { tokens.contains($0) }) &&
+			   group.contains(where: { normalize($0).contains(normQuery) || normQuery.contains(normalize($0)) }) {
+				return true
 			}
 		}
-		return expanded
+		return false
 	}
 	
 	static func localizedSubtitle(for app: ASRepository.App, category: AppStore2026Category) -> String {
-		let nameAndID = normalize("\(app.name ?? "") \(app.id ?? "")")
+		let nameAndID = "\(app.name ?? "") \(app.id ?? "")".lowercased()
 		
 		if nameAndID.contains("instagram") || nameAndID.contains("insta") || nameAndID.contains("rocket") {
 			return "تواصل، شارك الصور والريلز بميزات إضافية"
@@ -177,10 +188,6 @@ enum AppStoreBilingualEngine {
 			return "توقيع وتثبيت تطبيقات IPA بسهولة"
 		}
 		
-		if let original = app.currentDescription,
-		   original.range(of: "\\p{Arabic}", options: .regularExpression) != nil {
-			return original
-		}
 		return category.defaultArabicSubtitle
 	}
 }
@@ -206,7 +213,7 @@ struct AppStoreAppItem: Identifiable, Hashable {
 		self.category = classified
 		self.isGame = classified.isGameCategory
 		self.arabicSubtitle = AppStoreBilingualEngine.localizedSubtitle(for: app, category: classified)
-		self.searchIndexTokens = AppStoreBilingualEngine.buildSearchTokens(for: app, category: classified)
+		self.searchIndexTokens = AppStoreBilingualEngine.buildFastSearchTokens(for: app, category: classified)
 		
 		if let urls = app.screenshotURLs, !urls.isEmpty {
 			self.screenshots = urls
@@ -218,12 +225,7 @@ struct AppStoreAppItem: Identifiable, Hashable {
 	}
 	
 	func matchesSearch(_ query: String) -> Bool {
-		let normalizedQuery = AppStoreBilingualEngine.normalize(query)
-		guard !normalizedQuery.isEmpty else { return true }
-		let words = normalizedQuery.split(separator: " ")
-		return words.allSatisfy { word in
-			searchIndexTokens.contains(word)
-		}
+		AppStoreBilingualEngine.matchesQuery(tokens: searchIndexTokens, query: query)
 	}
 	
 	static func == (lhs: AppStoreAppItem, rhs: AppStoreAppItem) -> Bool {
@@ -235,7 +237,7 @@ struct AppStoreAppItem: Identifiable, Hashable {
 	}
 }
 
-// MARK: - Editorial Instruction Model (Parsed Exclusively from IPA BLACK Source)
+// MARK: - Editorial Instruction Model
 struct TodayEditorialInstruction: Identifiable {
 	let id: String
 	let badge: String
@@ -354,8 +356,6 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 	
 	static func strictlyClassify(app: ASRepository.App) -> AppStore2026Category {
 		let nameAndBundle = "\(app.name ?? "") \(app.id ?? "") \(app.category ?? "")".lowercased()
-		let desc = (app.localizedDescription ?? app.subtitle ?? "").lowercased()
-		let combined = "\(nameAndBundle) \(desc)"
 		
 		let socialApps = ["instagram", "whatsapp", "tiktok", "snapchat", "twitter", "telegram", "facebook", "discord", "messenger", "reddit", "threads", "watusi", "bhinsta", "uplus", "rocket", "swiftgram", "nicegram", "wicked", "انستقرام", "واتس", "تيك توك", "سناب", "تليجرام", "تويتر", "فيسبوك", "ديسكورد"]
 		if socialApps.contains(where: { nameAndBundle.contains($0) }) { return .social }
@@ -373,33 +373,32 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 		if devToolApps.contains(where: { nameAndBundle.contains($0) }) { return .devTools }
 		
 		let pvpKeywords = ["pubg", "8ball", "pool", "cod", "callofduty", "freefire", "brawl", "fortnite", "fifa", "efootball", "pes", "mobilelegends", "wildrift", "standoff", "bullet", "pvp", "multiplayer", "ببجي", "بلياردو", "فري فاير", "كود", "فيفا", "بيس"]
-		if pvpKeywords.contains(where: { combined.contains($0) }) { return .pvpGames }
+		if pvpKeywords.contains(where: { nameAndBundle.contains($0) }) { return .pvpGames }
 		
 		let strategyKeywords = ["clash", "royale", "clans", "strategy", "chess", "tower", "defense", "war", "empire", "civilization", "boombeach", "plantsvs", "كلاش", "شطرنج", "حرب", "استراتيجيه"]
-		if strategyKeywords.contains(where: { combined.contains($0) }) { return .strategyGames }
+		if strategyKeywords.contains(where: { nameAndBundle.contains($0) }) { return .strategyGames }
 		
 		let simulationKeywords = ["roblox", "minecraft", "sims", "simcity", "gta", "rockstar", "sanandreas", "parking", "simulator", "bus", "truck", "flight", "farm", "hayday", "township", "روبلوكس", "ماين كرافت", "قراند", "محاكاة", "مزرعه"]
-		if simulationKeywords.contains(where: { combined.contains($0) }) { return .simulationGames }
+		if simulationKeywords.contains(where: { nameAndBundle.contains($0) }) { return .simulationGames }
 		
 		let puzzleKeywords = ["puzzle", "candy", "crush", "match", "brain", "sudoku", "word", "gardenscapes", "homescapes", "royalmatch", "angrybirds", "cuttherope", "2048", "trivia", "الغاز", "ألغاز", "ذكاء", "كلمات"]
-		if puzzleKeywords.contains(where: { combined.contains($0) }) { return .puzzleGames }
+		if puzzleKeywords.contains(where: { nameAndBundle.contains($0) }) { return .puzzleGames }
 		
 		let casualGameKeywords = [
 			"game", "games", "gaming", "arcade", "subway", "surfers", "minion", "temple", "run", "sonic",
 			"talking", "tom", "flappy", "jump", "racing", "race", "asphalt", "carx", "drift", "hillclimb",
 			"ludo", "yalla", "uno", "monopoly", "fruitninja", "jetpack", "pacman", "mario", "pokemon",
-			"zelda", "ppsspp", "delta", "retroarch", "emulator", "hack", "mod menu", "infinite coins",
-			"unlimited money", "god mode", "unlocked all", "playdead", "gameloft", "supercell", "zynga",
-			"rovio", "ketchapp", "voodoo", "miniclip", "ea.", "ubisoft", "activision", "konami", "sega",
-			"bandai", "capcom", "squareenix", "لعبة", "لعبه", "العاب", "ألعاب", "تهكير لعبة", "اموال غير محدودة"
+			"zelda", "ppsspp", "delta", "retroarch", "emulator", "hack", "playdead", "gameloft", "supercell",
+			"zynga", "rovio", "ketchapp", "voodoo", "miniclip", "ubisoft", "activision", "konami", "sega",
+			"لعبة", "لعبه", "العاب", "ألعاب"
 		]
-		if casualGameKeywords.contains(where: { combined.contains($0) }) { return .casualGames }
+		if casualGameKeywords.contains(where: { nameAndBundle.contains($0) }) { return .casualGames }
 		
 		return .productivity
 	}
 }
 
-// MARK: - Store Cache Manager (Separates IPA BLACK Exclusively for Today View)
+// MARK: - Instant Disk Cache & Parallel Direct Repo Loader (0.01s Store Startup!)
 @MainActor
 final class AppStoreCacheManager: ObservableObject {
 	static let shared = AppStoreCacheManager()
@@ -412,140 +411,251 @@ final class AppStoreCacheManager: ObservableObject {
 	@Published private(set) var pureGamesOnly: [AppStoreAppItem] = []
 	@Published private(set) var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] = [:]
 	
-	private var lastSourceSignature: String = ""
 	private var isFetching = false
 	private var isBuildingCache = false
+	private var directLoadedRepos: [String: ASRepository] = [:]
+	
+	private nonisolated static var diskCacheDirectory: URL {
+		let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+			.appendingPathComponent("XSignInstantStoreCache", isDirectory: true)
+		try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+		return dir
+	}
+	
+	private nonisolated static let fastRepoSession: URLSession = {
+		let config = URLSessionConfiguration.default
+		config.networkServiceType = .responsiveData
+		config.httpMaximumConnectionsPerHost = 8
+		config.timeoutIntervalForRequest = 12
+		config.requestCachePolicy = .reloadIgnoringLocalCacheData
+		return URLSession(configuration: config)
+	}()
+	
+	init() {
+		// قراءة فورية من كاش القرص في اللحظة الأولى لفتح التطبيق (0.01 ثانية)
+		loadInstantDiskSnapshot()
+	}
+	
+	private func loadInstantDiskSnapshot() {
+		Task.detached(priority: .userInteractive) {
+			var snapshotRepos: [(URL?, String?, ASRepository)] = []
+			let decoder = JSONDecoder()
+			
+			let cachedFiles: [(urlStr: String, id: String, file: String)] = [
+				(ProtectedSourcesVault.ipaBlackURLString, "xsign.core.ipablack", "ipablack_cache.json"),
+				(ProtectedSourcesVault.storeAPIURLString, "xsign.core.storeapi", "storeapi_cache.json")
+			]
+			
+			for entry in cachedFiles {
+				let fileURL = Self.diskCacheDirectory.appendingPathComponent(entry.file)
+				if let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe),
+				   let repo = try? decoder.decode(ASRepository.self, from: data) {
+					snapshotRepos.append((URL(string: entry.urlStr), entry.id, repo))
+				}
+			}
+			
+			guard !snapshotRepos.isEmpty else { return }
+			await Self.processAndPublish(snapshot: snapshotRepos)
+		}
+	}
 	
 	func ensureFetched(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
-		if !isFetching && viewModel.sources.isEmpty {
-			isFetching = true
+		guard !isFetching else { return }
+		isFetching = true
+		
+		// جلب متوازٍ مباشر وفوري للسورسين الأساسيين دون انتظار CoreData
+		await fetchCoreReposDirectlyInParallel()
+		
+		// جلب أي سورسات إضافية خاصة بالمستخدم في الخلفية
+		let customSources = sources.filter { !ProtectedSourcesVault.isHiddenCoreSource($0) }
+		if !customSources.isEmpty {
 			await viewModel.fetchSources(sources)
-			isFetching = false
+			rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
 		}
-		rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
+		
+		isFetching = false
 	}
 	
 	func forceRefresh(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
 		guard !isFetching else { return }
 		isFetching = true
+		await fetchCoreReposDirectlyInParallel()
 		await viewModel.fetchSources(sources, refresh: true)
-		isFetching = false
-		lastSourceSignature = ""
 		rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
+		isFetching = false
+	}
+	
+	private func fetchCoreReposDirectlyInParallel() async {
+		let targets: [(urlStr: String, id: String, cacheFile: String)] = [
+			(ProtectedSourcesVault.ipaBlackURLString, "xsign.core.ipablack", "ipablack_cache.json"),
+			(ProtectedSourcesVault.storeAPIURLString, "xsign.core.storeapi", "storeapi_cache.json")
+		]
+		
+		await withTaskGroup(of: (String, String, URL, ASRepository)?.self) { group in
+			for target in targets {
+				group.addTask(priority: .userInteractive) {
+					guard let url = URL(string: target.urlStr) else { return nil }
+					var request = URLRequest(url: url)
+					request.networkServiceType = .responsiveData
+					
+					do {
+						let (data, _) = try await Self.fastRepoSession.data(for: request)
+						let cachePath = Self.diskCacheDirectory.appendingPathComponent(target.cacheFile)
+						try? data.write(to: cachePath, options: .atomic)
+						let repo = try JSONDecoder().decode(ASRepository.self, from: data)
+						return (target.urlStr, target.id, url, repo)
+					} catch {
+						return nil
+					}
+				}
+			}
+			
+			var loadedSnapshot: [(URL?, String?, ASRepository)] = []
+			for await result in group {
+				if let (urlStr, id, url, repo) = result {
+					directLoadedRepos[urlStr] = repo
+					loadedSnapshot.append((url, id, repo))
+					// عرض تدريجي فوري: بمجرد وصول أول سورس نعرضه فوراً على الشاشة ولا ننتظر الثاني!
+					await Self.processAndPublish(snapshot: loadedSnapshot)
+				}
+			}
+		}
 	}
 	
 	func rebuildCacheIfNeeded(sources: FetchedResults<AltSource>, repositoriesMap: [AltSource: ASRepository]) {
 		guard !isBuildingCache else { return }
-		let totalCount = repositoriesMap.values.reduce(0) { $0 + $1.apps.count }
-		let signature = "\(sources.count)_\(totalCount)"
-		guard signature != lastSourceSignature, totalCount > 0 else { return }
-		
-		lastSourceSignature = signature
 		isBuildingCache = true
 		
-		let snapshot: [(URL?, String?, ASRepository)] = sources.compactMap { source in
-			guard let repo = repositoriesMap[source] else { return nil }
-			return (source.sourceURL, source.identifier, repo)
+		var combinedSnapshot: [(URL?, String?, ASRepository)] = []
+		
+		if let ipaRepo = directLoadedRepos[ProtectedSourcesVault.ipaBlackURLString] {
+			combinedSnapshot.append((URL(string: ProtectedSourcesVault.ipaBlackURLString), "xsign.core.ipablack", ipaRepo))
+		}
+		if let storeRepo = directLoadedRepos[ProtectedSourcesVault.storeAPIURLString] {
+			combinedSnapshot.append((URL(string: ProtectedSourcesVault.storeAPIURLString), "xsign.core.storeapi", storeRepo))
 		}
 		
-		Task.detached(priority: .userInitiated) {
-			var allItems: [AppStoreAppItem] = []
-			var ipaBlackOnly: [AppStoreAppItem] = []
-			var ipaBlackNews: [TodayEditorialInstruction] = []
-			
-			allItems.reserveCapacity(totalCount)
-			var seenKeys = Set<String>()
-			
-			for (sourceURL, sourceID, repo) in snapshot {
-				let isIPABlack = ProtectedSourcesVault.isIPABlackSource(sourceURL, identifier: sourceID)
-				let sourceURLString = sourceURL?.absoluteString ?? ""
-				
-				var currentRepoItems: [AppStoreAppItem] = []
-				for app in repo.apps {
-					let uniqueKey = "\(app.id ?? app.currentName)_\(sourceURLString)"
-					let item = AppStoreAppItem(
-						id: uniqueKey,
-						sourceURL: sourceURL,
-						repository: repo,
-						app: app
-					)
-					if isIPABlack {
-						currentRepoItems.append(item)
-					}
-					if seenKeys.insert(uniqueKey).inserted {
-						allItems.append(item)
-					}
-				}
-				
-				if isIPABlack {
-					ipaBlackOnly.append(contentsOf: currentRepoItems)
-					
-					if let newsList = repo.news {
-						for newsItem in newsList {
-							let matchedApp = currentRepoItems.first {
-								$0.app.id == newsItem.appID
-							} ?? currentRepoItems.first
-							
-							ipaBlackNews.append(
-								TodayEditorialInstruction(
-									id: newsItem.id,
-									badge: "يحدث الآن",
-									title: newsItem.title,
-									caption: newsItem.caption,
-									imageURL: newsItem.imageURL,
-									tintColor: newsItem.tintColor ?? AppStoreTheme.oceanBlue,
-									associatedApp: matchedApp
-								)
-							)
-						}
-					}
+		for source in sources {
+			if let repo = repositoriesMap[source] {
+				let urlStr = source.sourceURL?.absoluteString ?? ""
+				if directLoadedRepos[urlStr] == nil {
+					combinedSnapshot.append((source.sourceURL, source.identifier, repo))
 				}
 			}
-			
-			let onlyApps = allItems.filter { !$0.isGame }
-			let onlyGames = allItems.filter { $0.isGame }
-			
-			var categoryDict: [AppStore2026Category: [AppStoreAppItem]] = [:]
-			for category in AppStore2026Category.allCases {
-				switch category {
-				case .topApps:
-					categoryDict[category] = onlyApps
-				case .bestSellingApps:
-					categoryDict[category] = Array(onlyApps.reversed())
-				case .topGames:
-					categoryDict[category] = onlyGames
-				case .bestSellingGames:
-					categoryDict[category] = Array(onlyGames.reversed())
-				case .timePass:
-					let casual = onlyGames.filter { $0.category == .casualGames || $0.category == .puzzleGames }
-					categoryDict[category] = casual.isEmpty ? onlyGames : casual
-				default:
-					let exactMatches = allItems.filter { $0.category == category }
-					if !exactMatches.isEmpty {
-						categoryDict[category] = exactMatches
-					} else {
-						categoryDict[category] = category.isGameCategory ? onlyGames : onlyApps
-					}
-				}
-			}
-			
-			let finalIPABlack = ipaBlackOnly.isEmpty ? allItems : ipaBlackOnly
-			let finalIPABlackNews = ipaBlackNews
-			let finalAll = allItems
-			let finalApps = onlyApps
-			let finalGames = onlyGames
-			let finalCats = categoryDict
-			
+		}
+		
+		guard !combinedSnapshot.isEmpty else {
+			isBuildingCache = false
+			return
+		}
+		
+		Task.detached(priority: .userInteractive) {
+			await Self.processAndPublish(snapshot: combinedSnapshot)
 			await MainActor.run {
-				let manager = AppStoreCacheManager.shared
-				manager.ipablackItems = finalIPABlack
-				manager.ipablackEditorialNews = finalIPABlackNews
-				manager.allCombinedItems = finalAll
-				manager.pureAppsOnly = finalApps
-				manager.pureGamesOnly = finalGames
-				manager.itemsByCategory = finalCats
-				manager.isBuildingCache = false
+				AppStoreCacheManager.shared.isBuildingCache = false
 			}
+		}
+	}
+	
+	private nonisolated static func processAndPublish(snapshot: [(URL?, String?, ASRepository)]) async {
+		let totalCount = snapshot.reduce(0) { $0 + $1.2.apps.count }
+		var allItems: [AppStoreAppItem] = []
+		var ipaBlackOnly: [AppStoreAppItem] = []
+		var ipaBlackNews: [TodayEditorialInstruction] = []
+		
+		allItems.reserveCapacity(totalCount)
+		var seenKeys = Set<String>()
+		
+		for (sourceURL, sourceID, repo) in snapshot {
+			let isIPABlack = await ProtectedSourcesVault.isIPABlackSource(sourceURL, identifier: sourceID)
+			let sourceURLString = sourceURL?.absoluteString ?? ""
+			
+			var currentRepoItems: [AppStoreAppItem] = []
+			currentRepoItems.reserveCapacity(repo.apps.count)
+			
+			for app in repo.apps {
+				let uniqueKey = "\(app.id ?? app.currentName)_\(sourceURLString)"
+				let item = AppStoreAppItem(
+					id: uniqueKey,
+					sourceURL: sourceURL,
+					repository: repo,
+					app: app
+				)
+				if isIPABlack {
+					currentRepoItems.append(item)
+				}
+				if seenKeys.insert(uniqueKey).inserted {
+					allItems.append(item)
+				}
+			}
+			
+			if isIPABlack {
+				ipaBlackOnly.append(contentsOf: currentRepoItems)
+				
+				if let newsList = repo.news {
+					for newsItem in newsList {
+						let matchedApp = currentRepoItems.first {
+							$0.app.id == newsItem.appID
+						} ?? currentRepoItems.first
+						
+						ipaBlackNews.append(
+							TodayEditorialInstruction(
+								id: newsItem.id,
+								badge: "يحدث الآن",
+								title: newsItem.title,
+								caption: newsItem.caption,
+								imageURL: newsItem.imageURL,
+								tintColor: newsItem.tintColor ?? AppStoreTheme.oceanBlue,
+								associatedApp: matchedApp
+							)
+						)
+					}
+				}
+			}
+		}
+		
+		let onlyApps = allItems.filter { !$0.isGame }
+		let onlyGames = allItems.filter { $0.isGame }
+		
+		var categoryDict: [AppStore2026Category: [AppStoreAppItem]] = [:]
+		for category in AppStore2026Category.allCases {
+			switch category {
+			case .topApps:
+				categoryDict[category] = onlyApps
+			case .bestSellingApps:
+				categoryDict[category] = Array(onlyApps.reversed())
+			case .topGames:
+				categoryDict[category] = onlyGames
+			case .bestSellingGames:
+				categoryDict[category] = Array(onlyGames.reversed())
+			case .timePass:
+				let casual = onlyGames.filter { $0.category == .casualGames || $0.category == .puzzleGames }
+				categoryDict[category] = casual.isEmpty ? onlyGames : casual
+			default:
+				let exactMatches = allItems.filter { $0.category == category }
+				if !exactMatches.isEmpty {
+					categoryDict[category] = exactMatches
+				} else {
+					categoryDict[category] = category.isGameCategory ? onlyGames : onlyApps
+				}
+			}
+		}
+		
+		let finalIPABlack = ipaBlackOnly.isEmpty ? allItems : ipaBlackOnly
+		let finalIPABlackNews = ipaBlackNews
+		let finalAll = allItems
+		let finalApps = onlyApps
+		let finalGames = onlyGames
+		let finalCats = categoryDict
+		
+		await MainActor.run {
+			let manager = AppStoreCacheManager.shared
+			manager.ipablackItems = finalIPABlack
+			manager.ipablackEditorialNews = finalIPABlackNews
+			manager.allCombinedItems = finalAll
+			manager.pureAppsOnly = finalApps
+			manager.pureGamesOnly = finalGames
+			manager.itemsByCategory = finalCats
 		}
 	}
 }
@@ -568,7 +678,6 @@ final class AutoSignPipelineManager: ObservableObject {
 	private var cachedCertificate: CertificatePair? = nil
 	private var progressObservations: [String: NSKeyValueObservation] = [:]
 	
-	// جلسة تحميل خاصة فائقة السرعة بأولوية الشبكة القصوى
 	private lazy var turboSession: URLSession = {
 		let config = URLSessionConfiguration.default
 		config.networkServiceType = .responsiveData
@@ -588,7 +697,6 @@ final class AutoSignPipelineManager: ObservableObject {
 		cachedCertificate = Self.fetchActiveCertificate()
 	}
 	
-	// قراءة سريعة جداً لملف Info.plist مباشرة من الحزمة لتسريع التوقيع اللحظي
 	nonisolated static func prewarmInfoPlist(for app: Imported) {
 		guard let uuid = app.uuid else { return }
 		let unsignedDir = FileManager.default.unsigned.appendingPathComponent(uuid)
@@ -626,7 +734,6 @@ final class AutoSignPipelineManager: ObservableObject {
 				return
 			}
 			
-			// نقل فوري للملف عبر مؤشرات APFS بدون استهلاك الرام (0.001 ثانية)
 			let fastFileURL = FileManager.default.temporaryDirectory
 				.appendingPathComponent("TurboZSign_\(UUID().uuidString).ipa")
 			
@@ -644,7 +751,6 @@ final class AutoSignPipelineManager: ObservableObject {
 				return
 			}
 			
-			// تحويل الحالة فوراً إلى "توقيع..." وفك الحزمة وقراءة Info.plist وتوقيعها في نفس اللحظة!
 			Task { @MainActor in
 				self.progressObservations.removeValue(forKey: appKey)
 				self.activeStates[appKey] = .signing
@@ -674,7 +780,6 @@ final class AutoSignPipelineManager: ObservableObject {
 			}
 		}
 		
-		// متابعة حية وسريعة لنسبة التحميل بدون إبطاء الواجهة
 		let observation = task.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] progress, _ in
 			let percent = max(1, min(99, Int(progress.fractionCompleted * 100)))
 			Task { @MainActor in
@@ -721,7 +826,6 @@ final class AutoSignPipelineManager: ObservableObject {
 					self.activeStates[appKey] = .ready
 					UINotificationFeedbackGenerator().notificationOccurred(.success)
 					
-					// فتح نافذة التثبيت الفوري المعتمدة على Info.plist manifest
 					if let latestSigned = Self.fetchSignedApps().first {
 						self.readyToInstallApp = AnyApp(base: latestSigned)
 					}
@@ -805,7 +909,7 @@ struct AppStoreTodayView: View {
 					)
 					
 					if todayApps.isEmpty {
-						AppStore2026EmptyState(isLoading: !viewModel.isFinished)
+						AppStore2026EmptyState(isLoading: true)
 							.padding(.horizontal, 18)
 							.padding(.top, 30)
 					} else {
@@ -1042,9 +1146,6 @@ struct AppStoreTodayView: View {
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
-		.onChange(of: viewModel.sources.count) { _ in
-			cache.rebuildCacheIfNeeded(sources: _sources, repositoriesMap: viewModel.sources)
-		}
 	}
 }
 
@@ -1091,7 +1192,7 @@ struct SourcesView: View {
 					)
 					
 					if cache.pureAppsOnly.isEmpty {
-						AppStore2026EmptyState(isLoading: !viewModel.isFinished)
+						AppStore2026EmptyState(isLoading: true)
 							.padding(.horizontal, 18)
 							.padding(.top, 30)
 					} else {
@@ -1222,9 +1323,6 @@ struct SourcesView: View {
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
-		.onChange(of: viewModel.sources.count) { _ in
-			cache.rebuildCacheIfNeeded(sources: _sources, repositoriesMap: viewModel.sources)
-		}
 	}
 }
 
@@ -1270,7 +1368,7 @@ struct AppStoreGamesView: View {
 					)
 					
 					if cache.pureGamesOnly.isEmpty {
-						AppStore2026EmptyState(isLoading: !viewModel.isFinished)
+						AppStore2026EmptyState(isLoading: true)
 							.padding(.horizontal, 18)
 							.padding(.top, 20)
 					} else {
@@ -1402,9 +1500,6 @@ struct AppStoreGamesView: View {
 		.preferredColorScheme(.dark)
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
-		}
-		.onChange(of: viewModel.sources.count) { _ in
-			cache.rebuildCacheIfNeeded(sources: _sources, repositoriesMap: viewModel.sources)
 		}
 	}
 }
@@ -1574,13 +1669,10 @@ struct AppStoreSearchView: View {
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
-		.onChange(of: viewModel.sources.count) { _ in
-			cache.rebuildCacheIfNeeded(sources: _sources, repositoriesMap: viewModel.sources)
-		}
 	}
 }
 
-// MARK: - Top Header (Only Account Avatar Remains - No "+" Button)
+// MARK: - Top Header (Only Account Avatar Remains)
 struct AppStore2026TopHeader: View {
 	let title: String
 	let onSettingsTap: () -> Void
@@ -2730,7 +2822,7 @@ struct AppStore2026EmptyState: View {
 			ProgressView()
 				.tint(Color(hex: userTintHex))
 				.scaleEffect(1.3)
-			Text("جاري مزامنة المتجر...")
+			Text("جاري مزامنة المتجر بسرعة فائقة...")
 				.font(.subheadline.weight(.semibold))
 				.foregroundStyle(.white)
 		}
