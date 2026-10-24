@@ -14,24 +14,34 @@ struct ExtendedTabbarView: View {
 	
 	var body: some View {
 		TabView {
-			Tab(TabEnum.today.title, systemImage: TabEnum.today.icon) {
+			Tab {
 				TabEnum.view(for: .today)
+			} label: {
+				TabEnum.today.tabLabel
 			}
 			
-			Tab(TabEnum.games.title, systemImage: TabEnum.games.icon) {
+			Tab {
 				TabEnum.view(for: .games)
+			} label: {
+				TabEnum.games.tabLabel
 			}
 			
-			Tab(TabEnum.sources.title, systemImage: TabEnum.sources.icon) {
+			Tab {
 				TabEnum.view(for: .sources)
+			} label: {
+				TabEnum.sources.tabLabel
 			}
 			
-			Tab(TabEnum.library.title, systemImage: TabEnum.library.icon) {
+			Tab {
 				TabEnum.view(for: .library)
+			} label: {
+				TabEnum.library.tabLabel
 			}
 			
-			Tab(TabEnum.search.title, systemImage: TabEnum.search.icon, role: .search) {
+			Tab(role: .search) {
 				TabEnum.view(for: .search)
+			} label: {
+				TabEnum.search.tabLabel
 			}
 		}
 		.tabViewStyle(.sidebarAdaptable)
