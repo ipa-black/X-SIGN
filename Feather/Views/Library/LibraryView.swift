@@ -289,11 +289,12 @@ struct LibraryView: View {
 		.preferredColorScheme(.dark)
 	}
 	
-	// MARK: - Instant Import + Direct Info.plist Prewarm + Automatic ZSign
+	// MARK: - Direct APFS-Link Turbo File Importer (Instant ZSign - Zero RAM Overhead)
 	private func _instantImportAndAutoSign(urls: [URL]) {
 		guard !urls.isEmpty else { return }
+		_oneClickStatusMessage = "استيراد وقراءة سريعة لـ Info.plist..."
+		
 		let existingUUIDs = Set(AutoSignPipelineManager.fetchImportedApps().compactMap { $0.uuid })
-		_oneClickStatusMessage = "جاري فك الحزمة وقراءة Info.plist..."
 		
 		DispatchQueue.global(qos: .userInteractive).async {
 			for url in urls {
@@ -304,18 +305,19 @@ struct LibraryView: View {
 							url.stopAccessingSecurityScopedResource()
 						}
 					}
-					let id = "TurboImport_\(UUID().uuidString)"
-					let dl = DownloadManager.shared.startArchive(from: url, id: id)
+					
+					let directID = "InstantImport_\(UUID().uuidString)"
+					let dl = DownloadManager.shared.startArchive(from: url, id: directID)
 					try? DownloadManager.shared.handlePachageFile(url: url, dl: dl)
 				}
 			}
 			
 			DispatchQueue.main.async {
-				let currentImported = AutoSignPipelineManager.fetchImportedApps()
-				if let newlyImported = currentImported.first(where: { item in
+				let updatedImported = AutoSignPipelineManager.fetchImportedApps()
+				if let newlyImported = updatedImported.first(where: { item in
 					guard let uuid = item.uuid else { return false }
 					return !existingUUIDs.contains(uuid)
-				}) ?? currentImported.first {
+				}) ?? currentImportedFallback() {
 					AutoSignPipelineManager.prewarmInfoPlist(for: newlyImported)
 					_ultraFastSign(app: newlyImported)
 				} else {
@@ -323,6 +325,10 @@ struct LibraryView: View {
 				}
 			}
 		}
+	}
+	
+	private func currentImportedFallback() -> Imported? {
+		AutoSignPipelineManager.fetchImportedApps().first
 	}
 	
 	// MARK: - Ultra-Fast Instant Signing via ZSign
