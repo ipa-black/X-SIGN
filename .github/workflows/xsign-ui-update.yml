@@ -1,4 +1,4 @@
-name: Apply XSign Launch, Dock and Download Update
+name: Install XSign Source Update Once and Build
 
 on:
   workflow_dispatch:
@@ -7,2164 +7,267 @@ permissions:
   contents: write
 
 concurrency:
-  group: xsign-ui-update
+  group: xsign-ui-update-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   apply-and-build:
+    if: github.ref_type == 'branch'
     runs-on: macos-latest
     timeout-minutes: 45
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref_name }}
           submodules: recursive
           fetch-depth: 0
 
-      - name: Apply all reviewed changes
+      - name: Install reviewed changes into original source files once
         shell: bash
         run: |
           python3 - <<'XSIGN_PY'
           from pathlib import Path
-          import hashlib, json
-
-          # Reviewed source: ipa-black/X-SIGN at ae320f4af04a60746f3c36f7f8724370b4d4d0d2.
-          # Existing-file edits use zero-based original line ranges.
-          # Every original file is checked before any file is written.
-          FILES = [
-              {
-                  'path': '.github/workflows/xsign-verify.yml',
-                  'result': 'b2e6a60ee39b5462ca59af38543ed08d897716081f3c326dcf4bc551b28f4f9e',
-                  'base': None,
-                  'text': r'''name: Verify XSign UI and Downloads
-
-          on:
-            workflow_dispatch:
-
-          permissions:
-            contents: read
-
-          jobs:
-            verify:
-              runs-on: macos-latest
-              timeout-minutes: 45
-              steps:
-                - uses: actions/checkout@v4
-                  with:
-                    submodules: recursive
-                - name: Select installed Xcode 26
-                  shell: bash
-                  run: |
-                    set -euo pipefail
-                    selected="$(python3 - <<'PY'
-                    from pathlib import Path
-                    versions = sorted(Path("/Applications").glob("Xcode_26*.app"))
-                    if not versions:
-                        raise SystemExit("An installed Xcode 26 is required.")
-                    print(versions[-1] / "Contents/Developer")
-                    PY
-                    )"
-                    sudo xcode-select -s "$selected"
-                    xcodebuild -version
-                - name: Test download queue and package gate
-                  run: python3 Scripts/run_download_smoke.py
-                - name: Build IPA
-                  run: make
-                - name: Check packaged launch screen
-                  run: |
-                    python3 - <<'PY'
-                    from pathlib import Path
-                    import plistlib
-                    app = Path("_build/Payload/X-SIGN.app")
-                    info = plistlib.loads((app / "Info.plist").read_bytes())
-                    assert info.get("UILaunchStoryboardName") == "Launch Screen", info.get("UILaunchStoryboardName")
-                    assert (app / "Launch Screen.storyboardc").is_dir()
-                    print("PASS: XSign launch storyboard is present in the packaged app.")
-                    PY
-                - uses: actions/upload-artifact@v4
-                  with:
-                    name: X-SIGN-verified
-                    path: packages/*.ipa
-                    if-no-files-found: error
-          ''',
-              },
-              {
-                  'path': 'Feather.xcodeproj/project.pbxproj',
-                  'result': 'e9a51419566b0d3211ca372548df2cfdd0ef3a2448186ed316846b93bcd2df91',
-                  'base': 'd36be267d757a4a14979ff17054d6732d3a84dbb',
-                  'edits': [
-                      (374, 375, r'''\t\t\t\tINFOPLIST_KEY_UILaunchStoryboardName = "Launch Screen";
-          '''),
-                      (438, 439, r'''\t\t\t\tINFOPLIST_KEY_UILaunchStoryboardName = "Launch Screen";
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Backend/Observable/DownloadManager.swift',
-                  'result': '6aae3396a488c2f5c9f3dcfa69b6c1484e701b69a40493492b03ba8b67c07d3e',
-                  'base': '8650f49df733994ec3fac859c9a9500bed103d9a',
-                  'text': r'''import Foundation
-          import Combine
-          import UIKit
-          import BackgroundTasks
-
-          final class Download: ObservableObject, Identifiable, @unchecked Sendable {
-              enum State: Equatable {
-                  case queued, downloading, waitingForImport, importing, finished, failed, cancelled
-              }
-
-              @Published var progress: Double = 0
-              @Published var bytesDownloaded: Int64 = 0
-              @Published var totalBytes: Int64 = 0
-              @Published var unpackageProgress: Double = 0
-              @Published fileprivate(set) var state: State
-
-              var overallProgress: Double {
-                  onlyArchiving ? unpackageProgress : 0.3 * unpackageProgress + 0.7 * progress
-              }
-
-              var task: URLSessionDownloadTask?
-              var resumeData: Data?
-              let id: String
-              let url: URL
-              let fileName: String
-              let onlyArchiving: Bool
-              var sourceProvenance: SourceAppProvenance?
-              fileprivate var importHandlers: [(Result<String, Error>) -> Void] = []
-
-              init(id: String, url: URL, onlyArchiving: Bool = false, sourceProvenance: SourceAppProvenance? = nil) {
-                  self.id = id
-                  self.url = url
-                  self.onlyArchiving = onlyArchiving
-                  self.sourceProvenance = sourceProvenance
-                  self.fileName = url.lastPathComponent
-                  self.state = onlyArchiving ? .waitingForImport : .queued
-              }
-          }
-
-          final class DownloadManager: NSObject, ObservableObject, @unchecked Sendable {
-              static let shared = DownloadManager()
-              @Published private(set) var downloads: [Download] = []
-
-              // A bounded pipeline: at most two transfers and three packages in-flight.
-              private let maximumTransfers = 2
-              private let maximumPackagesInFlight = 3
-              private var session: URLSession!
-              private var activeTasks: [Int: Download] = [:]
-              private var importQueue: [ImportJob] = []
-              private var currentImport: ImportJob?
-
-              // Accessed only by the serial URLSession delegate queue.
-              private var lastProgressTime: [Int: TimeInterval] = [:]
-
-              private struct ImportJob {
-                  let download: Download
-                  let url: URL
-                  let ownedDirectory: URL?
-              }
-
-              var manualDownloads: [Download] {
-                  onMain { downloads.filter { isManualDownload($0.id) } }
-              }
-
-              override init() {
-                  super.init()
-                  let configuration = URLSessionConfiguration.ephemeral
-                  configuration.urlCache = nil
-                  configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-                  configuration.httpMaximumConnectionsPerHost = 2
-                  configuration.timeoutIntervalForRequest = 60
-                  configuration.timeoutIntervalForResource = 24 * 60 * 60
-                  configuration.waitsForConnectivity = true
-
-                  let delegateQueue = OperationQueue()
-                  delegateQueue.name = "IPA.BLACK.DownloadDelegate"
-                  delegateQueue.maxConcurrentOperationCount = 1
-                  delegateQueue.qualityOfService = .utility
-                  session = URLSession(configuration: configuration, delegate: self, delegateQueue: delegateQueue)
-              }
-
-              @discardableResult
-              func startDownload(
-                  from url: URL,
-                  id: String = UUID().uuidString,
-                  sourceProvenance: SourceAppProvenance? = nil,
-                  onImported: ((Result<String, Error>) -> Void)? = nil
-              ) -> Download {
-                  onMain {
-                      if let existing = downloads.first(where: {
-                          !$0.onlyArchiving &&
-                          ($0.id == id || $0.url == url)
-                      }) {
-                          if existing.sourceProvenance == nil { existing.sourceProvenance = sourceProvenance }
-                          if let onImported { existing.importHandlers.append(onImported) }
-                          // Repeated taps must never create a second task.
-                          return existing
-                      }
-
-                      let download = Download(id: id, url: url, sourceProvenance: sourceProvenance)
-                      if let onImported { download.importHandlers.append(onImported) }
-                      downloads.append(download)
-                      pumpDownloads()
-                      updateBackgroundAudioState()
-                      return download
-                  }
-              }
-
-              func startArchive(from url: URL, id: String = UUID().uuidString) -> Download {
-                  onMain {
-                      let download = Download(id: id, url: url, onlyArchiving: true)
-                      downloads.append(download)
-                      startBackgroundTask(download)
-                      return download
-                  }
-              }
-
-              // Preserved for existing callers. Active transfers are never recreated.
-              func resumeDownload(_ download: Download) {
-                  onMain {
-                      guard downloads.contains(where: { $0 === download }) else { return }
-                      if download.state == .downloading, download.task?.state == .suspended {
-                          download.task?.resume()
-                      } else if download.state == .queued {
-                          pumpDownloads()
-                      }
-                  }
-              }
-
-              func cancelDownload(_ download: Download) {
-                  onMain {
-                      guard downloads.contains(where: { $0 === download }) else { return }
-                      // The ZIP library cannot safely interrupt an extraction in progress.
-                      guard download.state != .importing else { return }
-                      let task = download.task
-                      if let task { activeTasks.removeValue(forKey: task.taskIdentifier) }
-                      task?.cancel()
-                      if let job = importQueue.first(where: { $0.download === download }) {
-                          removeOwnedFile(job)
-                      }
-                      importQueue.removeAll { $0.download === download }
-                      finish(download, result: .failure(URLError(.cancelled)), cancelled: true)
-                  }
-              }
-
-              func isManualDownload(_ string: String) -> Bool { string.contains("FeatherManualDownload") }
-
-              func getDownload(by id: String) -> Download? {
-                  onMain { downloads.first { $0.id == id } }
-              }
-
-              func getDownloadIndex(by id: String) -> Int? {
-                  onMain { downloads.firstIndex { $0.id == id } }
-              }
-
-              func getDownloadTask(by task: URLSessionDownloadTask) -> Download? {
-                  onMain { activeTasks[task.taskIdentifier] }
-              }
-
-              func handlePachageFile(url: URL, dl: Download) throws {
-                  onMain {
-                      guard downloads.contains(where: { $0 === dl }),
-                            dl.state != .importing,
-                            !importQueue.contains(where: { $0.download === dl }) else { return }
-                      dl.state = .waitingForImport
-                      importQueue.append(ImportJob(download: dl, url: url, ownedDirectory: nil))
-                      pumpImports()
-                  }
-              }
-
-              private func pumpDownloads() {
-                  while activeTasks.count < maximumTransfers {
-                      let packagesInFlight = activeTasks.count + importQueue.count + (currentImport == nil ? 0 : 1)
-                      guard packagesInFlight < maximumPackagesInFlight,
-                            let download = downloads.first(where: { $0.state == .queued }) else { break }
-
-                      let task = session.downloadTask(with: download.url)
-                      download.task = task
-                      download.state = .downloading
-                      activeTasks[task.taskIdentifier] = download
-                      startBackgroundTask(download)
-                      task.resume()
-                  }
-              }
-
-              private func pumpImports() {
-                  guard currentImport == nil, !importQueue.isEmpty else { return }
-                  let job = importQueue.removeFirst()
-                  currentImport = job
-                  job.download.state = .importing
-                  FR.importPackageFile(job.url, download: job.download) { [weak self] result in
-                      guard let self else { return }
-                      self.onMain {
-                          self.removeOwnedFile(job)
-                          self.currentImport = nil
-                          self.finish(job.download, result: result)
-                          self.pumpImports()
-                          self.pumpDownloads()
-                      }
-                  }
-              }
-
-              private func finish(_ download: Download, result: Result<String, Error>, cancelled: Bool = false) {
-                  guard downloads.contains(where: { $0 === download }) else { return }
-                  if let task = download.task { activeTasks.removeValue(forKey: task.taskIdentifier) }
-                  download.task = nil
-                  switch result {
-                  case .success:
-                      download.progress = 1
-                      download.unpackageProgress = 1
-                      download.state = .finished
-                  case .failure:
-                      download.state = cancelled ? .cancelled : .failed
-                  }
-
-                  downloads.removeAll { $0 === download }
-                  stopBackgroundTask(download, success: (try? result.get()) != nil)
-                  let handlers = download.importHandlers
-                  download.importHandlers.removeAll()
-                  handlers.forEach { $0(result) }
-
-                  if case .failure(let error) = result, handlers.isEmpty, !cancelled {
-                      UINotificationFeedbackGenerator().notificationOccurred(.error)
-                      UIAlertController.showAlertWithOk(title: "تعذر تنزيل التطبيق", message: error.localizedDescription)
-                  }
-                  updateBackgroundAudioState()
-                  pumpDownloads()
-              }
-
-              private func removeOwnedFile(_ job: ImportJob) {
-                  if let directory = job.ownedDirectory { try? FileManager.default.removeItem(at: directory) }
-              }
-
-              private func onMain<T>(_ work: () -> T) -> T {
-                  Thread.isMainThread ? work() : DispatchQueue.main.sync(execute: work)
-              }
-
-              private func startBackgroundTask(_ download: Download) {
-                  #if !targetEnvironment(macCatalyst)
-                  if #available(iOS 26.0, *) {
-                      BackgroundTaskManager.shared.startTask(for: download.id, filename: download.fileName)
-                  }
-                  #endif
-                  updateBackgroundAudioState()
-              }
-
-              private func stopBackgroundTask(_ download: Download, success: Bool) {
-                  #if !targetEnvironment(macCatalyst)
-                  if #available(iOS 26.0, *) {
-                      BackgroundTaskManager.shared.stopTask(for: download.id, success: success)
-                  }
-                  #endif
-              }
-
-              private func updateBackgroundAudioState() {
-                  #if !targetEnvironment(macCatalyst)
-                  if #unavailable(iOS 26.0) {
-                      if downloads.isEmpty { BackgroundAudioManager.shared.stop() }
-                      else { BackgroundAudioManager.shared.start() }
-                  }
-                  #endif
-              }
-          }
-
-          extension DownloadManager: URLSessionDownloadDelegate {
-              func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-                  lastProgressTime.removeValue(forKey: downloadTask.taskIdentifier)
-                  guard let download = getDownloadTask(by: downloadTask) else { return }
-
-                  var ownedDirectory: URL?
-                  do {
-                      guard let response = downloadTask.response as? HTTPURLResponse,
-                            (200..<300).contains(response.statusCode) else {
-                          let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
-                          throw NSError(domain: "IPA.BLACK.Download", code: code, userInfo: [
-                              NSLocalizedDescriptionKey: "رفض خادم التنزيل الطلب (HTTP \(code))."
-                          ])
-                      }
-
-                      // Validate just four bytes. Never load the IPA into a Data buffer.
-                      let handle = try FileHandle(forReadingFrom: location)
-                      let prefix: Data?
-                      do {
-                          prefix = try handle.read(upToCount: 4)
-                          try handle.close()
-                      } catch {
-                          try? handle.close()
-                          throw error
-                      }
-                      guard prefix == Data([0x50, 0x4B, 0x03, 0x04]) else {
-                          throw NSError(domain: "IPA.BLACK.Download", code: -2, userInfo: [
-                              NSLocalizedDescriptionKey: "الرابط لم يُرجع ملف IPA صالحاً؛ قد يكون صفحة ويب أو رابطاً منتهياً."
-                          ])
-                      }
-
-                      let directory = FileManager.default.temporaryDirectory
-                          .appendingPathComponent("XSignDownloads", isDirectory: true)
-                          .appendingPathComponent(UUID().uuidString, isDirectory: true)
-                      ownedDirectory = directory
-                      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                      let ext = download.url.pathExtension.lowercased() == "tipa" ? "tipa" : "ipa"
-                      let destination = directory.appendingPathComponent("Application.\(ext)")
-                      // The temporary file must be moved before this delegate callback returns.
-                      try FileManager.default.moveItem(at: location, to: destination)
-
-                      DispatchQueue.main.async {
-                          guard self.activeTasks[downloadTask.taskIdentifier] === download else {
-                              try? FileManager.default.removeItem(at: directory)
-                              return
-                          }
-                          self.activeTasks.removeValue(forKey: downloadTask.taskIdentifier)
-                          download.task = nil
-                          download.progress = 1
-                          download.state = .waitingForImport
-                          self.importQueue.append(ImportJob(download: download, url: destination, ownedDirectory: directory))
-                          self.pumpImports()
-                          self.pumpDownloads()
-                      }
-                  } catch {
-                      if let ownedDirectory { try? FileManager.default.removeItem(at: ownedDirectory) }
-                      DispatchQueue.main.async {
-                          self.finish(download, result: .failure(error))
-                      }
-                  }
-              }
-
-              func urlSession(
-                  _ session: URLSession,
-                  downloadTask: URLSessionDownloadTask,
-                  didWriteData bytesWritten: Int64,
-                  totalBytesWritten: Int64,
-                  totalBytesExpectedToWrite: Int64
-              ) {
-                  let now = ProcessInfo.processInfo.systemUptime
-                  let isComplete = totalBytesExpectedToWrite > 0 && totalBytesWritten == totalBytesExpectedToWrite
-                  guard isComplete || now - (lastProgressTime[downloadTask.taskIdentifier] ?? 0) >= 0.1 else { return }
-                  lastProgressTime[downloadTask.taskIdentifier] = now
-
-                  DispatchQueue.main.async {
-                      guard let download = self.activeTasks[downloadTask.taskIdentifier] else { return }
-                      download.progress = totalBytesExpectedToWrite > 0
-                          ? min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)) : 0
-                      download.bytesDownloaded = totalBytesWritten
-                      download.totalBytes = max(0, totalBytesExpectedToWrite)
-                      #if !targetEnvironment(macCatalyst)
-                      if #available(iOS 26.0, *) {
-                          BackgroundTaskManager.shared.updateProgress(for: download.id, progress: download.overallProgress)
-                      }
-                      #endif
-                  }
-              }
-
-              func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-                  lastProgressTime.removeValue(forKey: task.taskIdentifier)
-                  guard let error else { return }
-                  DispatchQueue.main.async {
-                      guard let download = self.activeTasks[task.taskIdentifier] else { return }
-                      self.finish(download, result: .failure(error))
-                  }
-              }
-          }
-          ''',
-              },
-              {
-                  'path': 'Feather/FeatherApp.swift',
-                  'result': 'e53b0ba639a43b89864bf1bfc67b070f6dc232adbc13f8dae66d064004aaf971',
-                  'base': '7193833c61e80c6044e9e7345cebf8475436af32',
-                  'edits': [
-                      (26, 27, r'''\t\t\t\tVStack(spacing: 0) {
-          '''),
-                      (34, 35, r'''\t\t\t\t.animation(.easeInOut(duration: 0.2), value: downloadManager.manualDownloads.count)
-          '''),
-                      (38, 39, r'''\t\t\t\t\t\twithAnimation(.easeOut(duration: 0.18)) {
-          '''),
-                      (147, 148, r'''                    FR.handlePackageFile(url) { _ in url.stopAccessingSecurityScopedResource() }
-          '''),
-                      (158, 172, r'''// MARK: - Exact launch artwork, shared with the system launch storyboard
-          struct XSignLaunchSplashView: View {
-              var onFinished: () -> Void
-          '''),
-                      (173, 256, r'''    var body: some View {
-                  GeometryReader { geometry in
-                      ZStack {
-                          Color(red: 0, green: 49.0 / 255.0, blue: 115.0 / 255.0)
-                          Image("XSignLaunch")
-                              .resizable()
-                              .renderingMode(.original)
-                              .scaledToFit()
-                              .frame(width: min(320, geometry.size.width * 0.82))
-                              .accessibilityLabel("XSign")
-                      }
-                      .frame(maxWidth: .infinity, maxHeight: .infinity)
-                  }
-                  .ignoresSafeArea()
-                  .task {
-                      // No timer or network dependency holds the launch screen open.
-                      await Task.yield()
-                      guard !Task.isCancelled else { return }
-                      onFinished()
-                  }
-              }
-          '''),
-                      (270, 293, r'''    private func _createPipeline() {
-                  let memoryLimit = Int(min(
-                      UInt64(48 * 1024 * 1024),
-                      max(UInt64(24 * 1024 * 1024), ProcessInfo.processInfo.physicalMemory / 128)
-                  ))
-                  let pipeline = ImagePipeline {
-                      let config = URLSessionConfiguration.default
-                      config.urlCache = nil
-                      config.httpMaximumConnectionsPerHost = 4
-                      config.timeoutIntervalForRequest = 30
-                      $0.dataLoader = DataLoader(configuration: config)
-
-                      let diskCache = try? DataCache(name: "thewonderofyou.Feather.datacache")
-                      diskCache?.sizeLimit = 200 * 1024 * 1024
-                      let memoryCache = Nuke.ImageCache()
-                      memoryCache.costLimit = memoryLimit
-
-                      $0.dataCache = diskCache
-                      $0.imageCache = memoryCache
-                      $0.dataCachePolicy = .automatic
-                      $0.isStoringPreviewsInMemoryCache = false
-                      $0.isProgressiveDecodingEnabled = false
-                      $0.isTaskCoalescingEnabled = true
-                      $0.dataLoadingQueue.maxConcurrentOperationCount = 4
-                      $0.imageDecodingQueue.maxConcurrentOperationCount = 1
-                      $0.imageProcessingQueue.maxConcurrentOperationCount = 2
-                  }
-                  ImagePipeline.shared = pipeline
-              }
-
-              func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
-                  (ImagePipeline.shared.configuration.imageCache as? Nuke.ImageCache)?.removeAll()
-                  FRIconCache.shared.invalidateAll()
-              }
-
-          '''),
-                      (345, 346, r'''\t\t\t\t\tprovisionURL: provisionUrl,
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Resources/Assets.xcassets/XSignLaunch.imageset/Contents.json',
-                  'result': 'c07bb3072a8ddeccdd5e444e27321c58412b4b98a9258d15b46274497ef5fc6b',
-                  'base': None,
-                  'text': r'''{
-            "images": [
-              {
-                "filename": "XSignLaunch.png",
-                "idiom": "universal"
-              }
-            ],
-            "info": {
-              "author": "xcode",
-              "version": 1
-            }
-          }
-          ''',
-              },
-              {
-                  'path': 'Feather/Resources/Info.plist',
-                  'result': 'bb2b7571652bd9dd080357eb40cfad8cf94fee42b3c0781f3895eedf3273c06e',
-                  'base': '28cda2a5bd01acc3ea2548cbd201825ceeb7a3f0',
-                  'edits': [
-                      (133, 135, r'''\t<key>UILaunchStoryboardName</key>
-          \t<string>Launch Screen</string>
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Resources/Launch Screen.storyboard',
-                  'result': 'ee0f700af39df3750aeaa3a33381a871506268289784048fe061227b756a21de',
-                  'base': '81cb02cc5f8c7db304b06a7dd9fb2a850633c73e',
-                  'edits': [
-                      (7, 8, r''''''),
-                      (11, 12, r''''''),
-                      (19, 22, r'''                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="XSignLaunch" translatesAutoresizingMaskIntoConstraints="NO" id="lQc-Py-TkU">
-                                          <rect key="frame" x="36.5" y="266" width="320" height="320"/>
-          '''),
-                      (23, 26, r'''                                    <constraint firstAttribute="height" secondItem="lQc-Py-TkU" secondAttribute="width" id="sq-Xsign"/>
-                                              <constraint firstAttribute="width" relation="lessThanOrEqual" constant="320" id="max-Xsign"/>
-          '''),
-                      (30, 31, r'''                        <color key="backgroundColor" red="0.0" green="0.192156862745098" blue="0.450980392156863" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
-          '''),
-                      (34, 34, r'''                            <constraint firstItem="lQc-Py-TkU" firstAttribute="width" secondItem="Ze5-6b-2t3" secondAttribute="width" multiplier="0.82" priority="999" id="width-Xsign"/>
-          '''),
-                      (39, 40, r'''            <point key="canvasLocation" x="52" y="374"/>
-          '''),
-                      (42, 43, r''''''),
-                      (44, 51, r'''        <image name="XSignLaunch" width="512" height="512"/>
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Utilities/FR.swift',
-                  'result': '182ae3505695686210a6c8b92780e7ae1ade9cd9f5f9f03c22d0c63f57b381e5',
-                  'base': '9a5334fa7d49ad988c6f7a5c81927a75885bb2e1',
-                  'edits': [
-                      (15, 74, r'''    static func handlePackageFile(
-                  _ ipa: URL,
-                  download: Download? = nil,
-                  sourceProvenance: SourceAppProvenance? = nil,
-                  completion: @escaping (Error?) -> Void
-              ) {
-                  importPackageFile(ipa, download: download, sourceProvenance: sourceProvenance) { result in
-                      switch result {
-                      case .success: completion(nil)
-                      case .failure(let error): completion(error)
-                      }
-                  }
-              }
-
-              static func importPackageFile(
-                  _ ipa: URL,
-                  download: Download? = nil,
-                  sourceProvenance: SourceAppProvenance? = nil,
-                  completion: @escaping (Result<String, Error>) -> Void
-              ) {
-                  Task.detached(priority: .userInitiated) {
-                      await XSignPackageWorkGate.shared.acquire()
-                      let handler = AppFileHandler(file: ipa, download: download, sourceProvenance: sourceProvenance)
-                      let result: Result<String, Error>
-                      do {
-                          try await handler.copy()
-                          try await handler.extract()
-                          try await handler.move()
-                          try await handler.addToDatabase()
-                          result = .success(handler.importedUUID)
-                      } catch {
-                          result = .failure(error)
-                      }
-                      try? await handler.clean()
-                      await XSignPackageWorkGate.shared.release()
-                      await MainActor.run { completion(result) }
-                  }
-              }
-
-              static func signPackageFile(
-                  _ app: AppInfoPresentable,
-                  using options: Options,
-                  icon: UIImage?,
-                  certificate: CertificatePair?,
-                  completion: @escaping (Error?) -> Void
-              ) {
-                  signPackageFileWithResult(app, using: options, icon: icon, certificate: certificate) { result in
-                      switch result {
-                      case .success: completion(nil)
-                      case .failure(let error): completion(error)
-                      }
-                  }
-              }
-
-              static func signPackageFileWithResult(
-                  _ app: AppInfoPresentable,
-                  using options: Options,
-                  icon: UIImage?,
-                  certificate: CertificatePair?,
-                  completion: @escaping (Result<String, Error>) -> Void
-              ) {
-                  Task.detached(priority: .userInitiated) {
-                      await XSignPackageWorkGate.shared.acquire()
-                      let handler = await MainActor.run {
-                          let handler = SigningHandler(app: app, options: options)
-                          handler.appCertificate = certificate
-                          handler.appIcon = icon
-                          return handler
-                      }
-                      let result: Result<String, Error>
-                      do {
-                          try await handler.copy()
-                          try await handler.modify()
-                          result = .success(handler.signedUUID)
-                      } catch {
-                          result = .failure(error)
-                      }
-                      try? await handler.clean()
-                      await XSignPackageWorkGate.shared.release()
-                      await MainActor.run { completion(result) }
-                  }
-              }
-
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Utilities/Handlers/AppFileHandler.swift',
-                  'result': '2ae94b8b47b321729da69cbd16a60ab13f4f5fce307163876d6abd0d354af86f',
-                  'base': '2468c71ce064e13dc54d332e6ccb67e759abe141',
-                  'edits': [
-                      (14, 14, r'''    var importedUUID: String { _uuid }
-          '''),
-                      (45, 46, r'''\t\tif _download != nil && _ipa.pathComponents.contains("XSignDownloads") {
-                      try _fileManager.moveItem(at: _ipa, to: destinationURL)
-                  } else {
-                      try _fileManager.copyItem(at: _ipa, to: destinationURL)
-                  }
-          '''),
-                      (58, 58, r'''        var lastProgressEmission: TimeInterval = 0
-          '''),
-                      (68, 68, r'''                            let now = ProcessInfo.processInfo.systemUptime
-                                      guard progress >= 1 || now - lastProgressEmission >= 0.1 else { return }
-                                      lastProgressEmission = now
-          '''),
-                      (107, 134, r'''    func addToDatabase() async throws {
-                  let directory = try await _directory()
-                  guard let appURL = _fileManager.getPath(in: directory, for: "app") else {
-                      throw ImportedFileHandlerError.payloadNotFound
-                  }
-                  let bundle = Bundle(url: appURL)
-                  let name = bundle?.name
-                  let identifier = bundle?.bundleIdentifier
-                  let version = bundle?.version
-                  let icon = bundle?.iconFileName
-                  try await MainActor.run {
-                      var insertionError: Error?
-                      Storage.shared.addImported(
-                          uuid: _uuid,
-                          source: _sourceProvenance?.sourceRepositoryURL,
-                          appName: name,
-                          appIdentifier: identifier,
-                          appVersion: version,
-                          appIcon: icon
-                      ) { insertionError = $0 }
-                      if let insertionError { throw insertionError }
-                      if let provenance = _sourceProvenance {
-                          Storage.shared.addSourceMetadata(for: _uuid, kind: .imported, provenance: provenance)
-                      }
-                      if Storage.shared.context.hasChanges { try Storage.shared.context.save() }
-                  }
-              }
-
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Utilities/Handlers/ArchiveHandler.swift',
-                  'result': 'bc05ae98328a9a836d67aa9f1552c11f465a0d4949ccddb0561c31a8dd1a0a76',
-                  'base': '698f978ad95b09fd711b83c1574aa5187606b01c',
-                  'edits': [
-                      (46, 71, r'''    func archive() async throws -> URL {
-                  try await Task.detached(priority: .utility) { [self] in
-                      await XSignPackageWorkGate.shared.acquire()
-                      do {
-                          guard let payloadURL = self._payloadUrl else {
-                              throw SigningFileHandlerError.appNotFound
-                          }
-                          let zipURL = self._uniqueWorkDir.appendingPathComponent("Archive.zip")
-                          let ipaURL = self._uniqueWorkDir.appendingPathComponent("Archive.ipa")
-                          let compression = await MainActor.run {
-                              ZipCompression.allCases[max(
-                                  0, min(ArchiveHandler.getCompressionLevel(), ZipCompression.allCases.count - 1)
-                              )]
-                          }
-                          var lastEmission: TimeInterval = 0
-                          try Zip.zipFiles(
-                              paths: [payloadURL],
-                              zipFilePath: zipURL,
-                              password: nil,
-                              compression: compression,
-                              progress: { progress in
-                                  let now = ProcessInfo.processInfo.systemUptime
-                                  guard progress >= 1 || now - lastEmission >= 0.1 else { return }
-                                  lastEmission = now
-                                  Task { @MainActor in self.viewModel.packageProgress = progress }
-                              }
-                          )
-                          try FileManager.default.moveItem(at: zipURL, to: ipaURL)
-                          await XSignPackageWorkGate.shared.release()
-                          return ipaURL
-                      } catch {
-                          await XSignPackageWorkGate.shared.release()
-                          throw error
-                      }
-                  }.value
-              }
-
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Utilities/Handlers/SigningHandler.swift',
-                  'result': '836595996fc27be62729cd344eae4ad9b4bdfee15327f25387a6d662bd10b151',
-                  'base': 'e08c5ffb4a7e61867f1ed572cad4474e0d9c5537',
-                  'edits': [
-                      (15, 15, r'''    var signedUUID: String { _uuid }
-          '''),
-                      (19, 20, r'''\tprivate let _appDirectory: URL?
-              private let _appUUID: String?
-              private let _appSource: URL?
-              private let _appIdentifier: String?
-          '''),
-                      (31, 33, r'''\t@MainActor
-              init(app: AppInfoPresentable, options: Options = OptionsManager.shared.options) {
-          \t\tself._appDirectory = Storage.shared.getAppDirectory(for: app)
-                  self._appUUID = app.uuid
-                  self._appSource = app.source
-                  self._appIdentifier = app.identifier
-          '''),
-                      (40, 41, r'''\t\tguard let appUrl = _appDirectory else {
-          '''),
-                      (125, 131, r'''        if let error = handler.hadError { throw error }
-                  try await self.move()
-                  try await self.addToDatabase()
-          '''),
-                      (150, 181, r'''    func addToDatabase() async throws {
-                  let directory = try await _directory()
-                  guard let appURL = _fileManager.getPath(in: directory, for: "app") else {
-                      throw SigningFileHandlerError.appNotFound
-                  }
-                  let bundle = Bundle(url: appURL)
-                  let name = bundle?.name
-                  let identifier = bundle?.bundleIdentifier
-                  let version = bundle?.version
-                  let icon = bundle?.iconFileName
-                  try await MainActor.run {
-                      var insertionError: Error?
-                      Storage.shared.addSigned(
-                          uuid: _uuid,
-                          source: _appSource,
-                          certificate: _options.signingOption != .default ? nil : appCertificate,
-                          appName: name,
-                          appIdentifier: identifier,
-                          appVersion: version,
-                          appIcon: icon
-                      ) { insertionError = $0 }
-                      if let insertionError { throw insertionError }
-                      Storage.shared.copySourceMetadata(from: _appUUID, to: _uuid, kind: .signed)
-                      if Storage.shared.context.hasChanges { try Storage.shared.context.save() }
-                  }
-              }
-
-          '''),
-                      (453, 456, r'''\t\tlet provisionURL = await MainActor.run {
-                      appCertificate.flatMap { Storage.shared.getFile(.provision, from: $0) }
-                  }
-                  guard
-                      let ourEntitlements = CertificateReader(provisionURL).decoded
-          '''),
-                      (461, 462, r'''\t\tlet ourBundleIdentifer = options.appIdentifier ?? _appIdentifier
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Utilities/Handlers/ZsignHandler.swift',
-                  'result': '606b82cb4d245a031c19ddb0fc92f52d5f1ee84ec69a8e5b1472bd86bcc3f2bb',
-                  'base': 'b9dcd8f06b91af28f70593caf10793592aeff8d3',
-                  'edits': [
-                      (46, 46, r'''        let credentials = await MainActor.run {
-                      (
-                          provision: Storage.shared.getFile(.provision, from: cert)?.path ?? "",
-                          p12: Storage.shared.getFile(.certificate, from: cert)?.path ?? "",
-                          password: cert.password ?? ""
-                      )
-                  }
-          '''),
-                      (48, 51, r'''\t\t\tprovisionPath: credentials.provision,
-          \t\t\tp12Path: credentials.p12,
-          \t\t\tp12Password: credentials.password,
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Utilities/XSignImageRequest.swift',
-                  'result': '2896e6482f024d98f9a187a3a12aa5bbfb6b1b6619c6b9ae0b120d2eb3fe2aae',
-                  'base': None,
-                  'text': r'''import Foundation
-          import Nuke
-
-          enum XSignImageRequest {
-              /// ImageIO decodes a bounded thumbnail instead of first decoding the full bitmap.
-              static func thumbnail(_ url: URL?, maximumPixelSize: Float = 1200) -> ImageRequest {
-                  ImageRequest(
-                      url: url,
-                      userInfo: [
-                          .thumbnailKey: ImageRequest.ThumbnailOptions(
-                              maxPixelSize: max(64, min(maximumPixelSize, 1600))
-                          )
-                      ]
-                  )
-              }
-          }
-          ''',
-              },
-              {
-                  'path': 'Feather/Utilities/XSignPackageWorkGate.swift',
-                  'result': '72842e4cb673cf1b273b030fbee74550265a698df59153e0a1e521f88713797b',
-                  'base': None,
-                  'text': r'''import Foundation
-
-          /// One expensive package operation at a time across import, signing and archiving.
-          actor XSignPackageWorkGate {
-              static let shared = XSignPackageWorkGate()
-              private var occupied = false
-              private var waiters: [CheckedContinuation<Void, Never>] = []
-
-              func acquire() async {
-                  if !occupied {
-                      occupied = true
-                      return
-                  }
-                  await withCheckedContinuation { waiters.append($0) }
-              }
-
-              func release() {
-                  if waiters.isEmpty {
-                      occupied = false
-                  } else {
-                      waiters.removeFirst().resume()
-                  }
-              }
-          }
-          ''',
-              },
-              {
-                  'path': 'Feather/Views/Common/FRAppIconView.swift',
-                  'result': '9dcb699e412677b3cac6a8391ce83e36c5951c44ba807e6a2c50a91a53fc892c',
-                  'base': 'e48f3d0310991a7096e78dbbc0af3d0730690e4a',
-                  'edits': [
-                      (16, 17, r'''\tprivate init() {
-                  cache.countLimit = 100
-                  cache.totalCostLimit = 12 * 1024 * 1024
-              }
-          '''),
-                      (29, 30, r'''\t\tlet bytes = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 256 * 256 * 4
-                  cache.setObject(
-                      image,
-                      forKey: key(url: url, appearance: appearance, tint: tint, isTinted: isTinted, dynamic: dynamic),
-                      cost: bytes
-                  )
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Common/FRIconCellView.swift',
-                  'result': '7131ead4fc5868dc77cbc013e41bcdac2e8e3719d46fb20145d34b0717c93f98',
-                  'base': '3f96f930cfc9330f6f7ac22a32c4875e8dff2a11',
-                  'edits': [
-                      (23, 24, r'''\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 384)) { state in
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Sources/AppStoreCacheManager.swift',
-                  'result': '199cec4053d075ed5b539ca756c131ba4b5768a662cbd318573a7d72a1408daf',
-                  'base': None,
-                  'text': r'''import Foundation
-          import SwiftUI
-          import CoreData
-          import AltSourceKit
-
-          @MainActor
-          final class AppStoreCacheManager: ObservableObject {
-              static let shared = AppStoreCacheManager()
-
-              private struct Snapshot {
-                  var revision: UInt64 = 0
-                  var ipablackItems: [AppStoreAppItem] = []
-                  var ipablackEditorialNews: [TodayEditorialInstruction] = []
-                  var allCombinedItems: [AppStoreAppItem] = []
-                  var pureAppsOnly: [AppStoreAppItem] = []
-                  var pureGamesOnly: [AppStoreAppItem] = []
-                  var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] = [:]
-              }
-
-              @Published private var snapshot = Snapshot()
-              var revision: UInt64 { snapshot.revision }
-              var ipablackItems: [AppStoreAppItem] { snapshot.ipablackItems }
-              var ipablackEditorialNews: [TodayEditorialInstruction] { snapshot.ipablackEditorialNews }
-              var allCombinedItems: [AppStoreAppItem] { snapshot.allCombinedItems }
-              var pureAppsOnly: [AppStoreAppItem] { snapshot.pureAppsOnly }
-              var pureGamesOnly: [AppStoreAppItem] { snapshot.pureGamesOnly }
-              var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] { snapshot.itemsByCategory }
-
-              private var lastSignature = ""
-              private var generation: UInt64 = 0
-              private var buildTask: Task<Void, Never>?
-
-              func ensureFetched(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
-                  await viewModel.fetchSources(sources)
-                  rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
-              }
-
-              func forceRefresh(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
-                  await viewModel.fetchSources(sources, refresh: true)
-                  rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
-              }
-
-              func rebuildCacheIfNeeded(sources: FetchedResults<AltSource>, repositoriesMap: [AltSource: ASRepository]) {
-                  let sourceIDs = sources.map {
-                      "\($0.objectID.uriRepresentation().absoluteString)|\($0.sourceURL?.absoluteString ?? "")"
-                  }.joined(separator: "\n")
-                  let signature = "\(SourcesViewModel.shared.revision)|\(sourceIDs)"
-                  guard signature != lastSignature else { return }
-                  lastSignature = signature
-                  buildTask?.cancel()
-                  generation &+= 1
-                  let buildGeneration = generation
-
-                  // Only immutable values leave Core Data's main context.
-                  let repositories: [(URL?, String?, ASRepository)] = sources.compactMap { source in
-                      guard let repository = repositoriesMap[source] else { return nil }
-                      return (source.sourceURL, source.identifier, repository)
-                  }
-
-                  buildTask = Task.detached(priority: .userInitiated) { [weak self] in
-                      var result = Snapshot()
-                      result.revision = buildGeneration
-                      var seen = Set<String>()
-                      result.allCombinedItems.reserveCapacity(repositories.reduce(0) { $0 + $1.2.apps.count })
-
-                      for (sourceURL, sourceID, repository) in repositories {
-                          guard !Task.isCancelled else { return }
-                          let isIPABlack = ProtectedSourcesVault.isIPABlackSource(sourceURL, identifier: sourceID)
-                          var repositoryItems: [AppStoreAppItem] = []
-
-                          for app in repository.apps {
-                              guard !Task.isCancelled else { return }
-                              let key = "\(app.id ?? app.currentName)_\(sourceURL?.absoluteString ?? "")"
-                              guard seen.insert(key).inserted else { continue }
-                              let item = AppStoreAppItem(id: key, sourceURL: sourceURL, repository: repository, app: app)
-                              result.allCombinedItems.append(item)
-                              if item.isGame { result.pureGamesOnly.append(item) }
-                              else { result.pureAppsOnly.append(item) }
-                              if isIPABlack { repositoryItems.append(item) }
-                              result.itemsByCategory[item.category, default: []].append(item)
-                          }
-
-                          if isIPABlack {
-                              result.ipablackItems.append(contentsOf: repositoryItems)
-                              let byID = Dictionary(
-                                  repositoryItems.compactMap { item in item.app.id.map { ($0, item) } },
-                                  uniquingKeysWith: { first, _ in first }
-                              )
-                              for news in repository.news ?? [] {
-                                  result.ipablackEditorialNews.append(TodayEditorialInstruction(
-                                      id: "\(sourceURL?.absoluteString ?? "")|\(news.id)",
-                                      badge: "يحدث الآن",
-                                      title: news.title,
-                                      caption: news.caption,
-                                      imageURL: news.imageURL,
-                                      tintColor: news.tintColor ?? AppStoreTheme.oceanBlue,
-                                      associatedApp: (news.appID ?? nil).flatMap { byID[$0] } ?? repositoryItems.first
-                                  ))
-                              }
-                          }
-                      }
-
-                      result.itemsByCategory[.topApps] = result.pureAppsOnly
-                      result.itemsByCategory[.bestSellingApps] = Array(result.pureAppsOnly.reversed())
-                      result.itemsByCategory[.topGames] = result.pureGamesOnly
-                      result.itemsByCategory[.bestSellingGames] = Array(result.pureGamesOnly.reversed())
-                      let casual = result.pureGamesOnly.filter { $0.category == .casualGames || $0.category == .puzzleGames }
-                      result.itemsByCategory[.timePass] = casual.isEmpty ? result.pureGamesOnly : casual
-                      for category in AppStore2026Category.allCases where result.itemsByCategory[category]?.isEmpty != false {
-                          result.itemsByCategory[category] = category.isGameCategory ? result.pureGamesOnly : result.pureAppsOnly
-                      }
-                      if result.ipablackItems.isEmpty { result.ipablackItems = result.allCombinedItems }
-                      guard !Task.isCancelled else { return }
-                      let completed = result
-                      await MainActor.run {
-                          guard let self, self.generation == buildGeneration else { return }
-                          self.snapshot = completed
-                          self.buildTask = nil
-                      }
-                  }
-              }
-          }
-          ''',
-              },
-              {
-                  'path': 'Feather/Views/Sources/Apps/Detail/ScreenshotPreviewView.swift',
-                  'result': 'e08eb5b098c9aa1d94356e86afb89e82aa819e50b24a703ec9c5eca803f054f7',
-                  'base': '854196eec2589d464f404caf80e7ce456c51f185',
-                  'edits': [
-                      (62, 63, r'''\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(screenshotURLs[index], maximumPixelSize: 1600)) { state in
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Sources/Apps/Detail/SourceAppsDetailView.swift',
-                  'result': '92155439a9612e45b224b5ff5029cd45254042f3ba2155a520941a8f5fe282a5',
-                  'base': '3207a06f03a1cff7f1aa63d8342283668114608e',
-                  'edits': [
-                      (38, 39, r'''\t\t\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 1000)) { state in
-          '''),
-                      (239, 240, r'''\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 1000)) { state in
-          '''),
-                      (308, 309, r'''\t\t\tLazyHStack(spacing: 12) {
-          '''),
-                      (311, 312, r'''\t\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(url, maximumPixelSize: 1000)) { state in
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Sources/Apps/DownloadButtonView.swift',
-                  'result': 'ca0c47bf1c8f8380cf31ae3139685a13a533d206bdf0783503adbc0103434a0f',
-                  'base': '1296abff363e32c706204fac0062da53c7819b13',
-                  'edits': [
-                      (37, 38, r'''\t\t\t\t\tif currentDownload.state != .importing {
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Sources/Apps/News/SourceNewsCardInfoView.swift',
-                  'result': '1826635ae186f568daa9e58e825d1113e3db298082fdec13a62a47d7197a4f9e',
-                  'base': 'b32d77bd8c03d05155ab1f3b6aeba894e9fd25cc',
-                  'edits': [
-                      (27, 28, r'''\t\t\t\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 1024)) { state in
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Sources/Apps/News/SourceNewsCardView.swift',
-                  'result': 'db7e6f8d8d57fdbbbf7f6a6d4eacde6d0abc78363e328aa7965ec2a45edf9cf8',
-                  'base': '8b09e48ad3640511fff6fc360e70ab35c7086051',
-                  'edits': [
-                      (24, 25, r'''\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 1024)) { state in
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Sources/Apps/SourceAppsCellView.swift',
-                  'result': 'c44cd620308a023049acf6624ece7249dc6e82e3f20cfc6083732a78d035c29d',
-                  'base': '5ff8819a94305476c6d41cdd03c12c6ce474c08c',
-                  'edits': [
-                      (31, 32, r'''\t\t\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 384)) { state in
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Sources/AutoSignPipelineManager.swift',
-                  'result': 'fe59d9f01f84a034b7cc6dcd54dd55c919987d5b92ce860903c9592c5c683967',
-                  'base': None,
-                  'text': r'''import Foundation
-          import SwiftUI
-          import CoreData
-          import AltSourceKit
-          import UIKit
-
-          @MainActor
-          final class AutoSignPipelineManager: ObservableObject {
-              static let shared = AutoSignPipelineManager()
-              enum Stage: Equatable { case downloading, signing, ready }
-
-              @Published private(set) var activeStates: [String: Stage] = [:]
-              @Published private(set) var readyToInstallApp: AnyApp?
-
-              private var readyApps: [String: AnyApp] = [:]
-              private var readyOrder: [String] = []
-              private var pendingInstallations: [AnyApp] = []
-
-              static func key(for app: ASRepository.App) -> String {
-                  [app.id ?? app.currentName, app.currentVersion ?? "", app.currentDownloadUrl?.absoluteString ?? ""]
-                      .joined(separator: "|")
-              }
-
-              func downloadAndAutoSign(app: ASRepository.App, sourceProvenance: SourceAppProvenance? = nil) {
-                  let key = Self.key(for: app)
-                  if let ready = readyApps[key] {
-                      if isUsable(ready) {
-                          offerInstallation(ready)
-                          return
-                      }
-                      readyApps[key] = nil
-                      readyOrder.removeAll { $0 == key }
-                      activeStates[key] = nil
-                  }
-                  guard activeStates[key] == nil, let url = app.currentDownloadUrl else { return }
-                  activeStates[key] = .downloading
-                  UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-
-                  DownloadManager.shared.startDownload(from: url, id: "AutoSign_\(UUID().uuidString)", sourceProvenance: sourceProvenance) { [weak self] result in
-                      Task { @MainActor in self?.importFinished(result, appKey: key) }
-                  }
-              }
-
-              private func importFinished(_ result: Result<String, Error>, appKey: String) {
-                  switch result {
-                  case .failure(let error):
-                      activeStates[appKey] = nil
-                      if (error as NSError).code != NSURLErrorCancelled { showError(error) }
-                  case .success(let uuid):
-                      let request = NSFetchRequest<Imported>(entityName: "Imported")
-                      request.fetchLimit = 1
-                      request.predicate = NSPredicate(format: "uuid == %@", uuid)
-                      guard let app = try? Storage.shared.context.fetch(request).first else {
-                          activeStates[appKey] = nil
-                          return
-                      }
-                      guard let certificate = activeCertificate() else {
-                          activeStates[appKey] = nil
-                          UIAlertController.showAlertWithOk(
-                              title: "تم التنزيل",
-                              message: "التطبيق محفوظ في مكتبة التوقيع. أضف شهادة من الإعدادات لتوقيعه."
-                          )
-                          return
-                      }
-
-                      activeStates[appKey] = .signing
-                      FR.signPackageFileWithResult(
-                          app,
-                          using: OptionsManager.shared.options,
-                          icon: nil,
-                          certificate: certificate
-                      ) { [weak self] result in
-                          Task { @MainActor in self?.signingFinished(result, appKey: appKey) }
-                      }
-                  }
-              }
-
-              private func signingFinished(_ result: Result<String, Error>, appKey: String) {
-                  switch result {
-                  case .failure(let error):
-                      activeStates[appKey] = nil
-                      showError(error)
-                  case .success(let uuid):
-                      let request = NSFetchRequest<Signed>(entityName: "Signed")
-                      request.fetchLimit = 1
-                      request.predicate = NSPredicate(format: "uuid == %@", uuid)
-                      guard let app = try? Storage.shared.context.fetch(request).first else {
-                          activeStates[appKey] = nil
-                          return
-                      }
-                      let ready = AnyApp(base: app)
-                      readyApps[appKey] = ready
-                      readyOrder.removeAll { $0 == appKey }
-                      readyOrder.append(appKey)
-                      // Successful button state remains bounded even in long-running sessions.
-                      while readyOrder.count > 32 {
-                          let evicted = readyOrder.removeFirst()
-                          readyApps[evicted] = nil
-                          activeStates[evicted] = nil
-                      }
-                      activeStates[appKey] = .ready
-                      UINotificationFeedbackGenerator().notificationOccurred(.success)
-                      offerInstallation(ready)
-                  }
-              }
-
-              private func isUsable(_ app: AnyApp) -> Bool {
-                  guard let object = app.base as? NSManagedObject,
-                        !object.isDeleted, object.managedObjectContext != nil,
-                        app.base.uuid != nil else { return false }
-                  return Storage.shared.getAppDirectory(for: app.base) != nil
-              }
-
-              private func offerInstallation(_ app: AnyApp) {
-                  guard isUsable(app), readyToInstallApp?.id != app.id,
-                        !pendingInstallations.contains(where: { $0.id == app.id }) else { return }
-                  if readyToInstallApp == nil { readyToInstallApp = app }
-                  else { pendingInstallations.append(app) }
-              }
-
-              func dismissInstallation(id: String) {
-                  if readyToInstallApp?.id == id { readyToInstallApp = nil }
-                  while readyToInstallApp == nil, !pendingInstallations.isEmpty {
-                      let next = pendingInstallations.removeFirst()
-                      if isUsable(next) { readyToInstallApp = next }
-                  }
-              }
-
-              private func activeCertificate() -> CertificatePair? {
-                  let request = NSFetchRequest<CertificatePair>(entityName: "CertificatePair")
-                  request.sortDescriptors = [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)]
-                  guard let certificates = try? Storage.shared.context.fetch(request), !certificates.isEmpty else { return nil }
-                  let index = UserDefaults.standard.integer(forKey: "feather.selectedCert")
-                  return certificates.indices.contains(index) ? certificates[index] : certificates.first
-              }
-
-              private func showError(_ error: Error) {
-                  UINotificationFeedbackGenerator().notificationOccurred(.error)
-                  UIAlertController.showAlertWithOk(title: "تعذر تجهيز التطبيق", message: error.localizedDescription)
-              }
-          }
-          ''',
-              },
-              {
-                  'path': 'Feather/Views/Sources/SourcesView.swift',
-                  'result': 'e1eb49f9ac4453f51e4cc25d158b6f1df45c73415fe89152e7edca3fc1804e47',
-                  'base': '6c8bcab1cbd1718829afc981d29cf0653af78655',
-                  'edits': [
-                      (101, 101, r'''    private static let normalizedSynonymGroups = synonymGroups.map { group in
-                  group.map { normalize($0) }
-              }
-
-          '''),
-                      (114, 118, r'''\t\tfor group in normalizedSynonymGroups {
-                      if group.contains(where: { base.contains($0) }) {
-                          expanded += " " + group.joined(separator: " ")
-          '''),
-                      (189, 190, r'''final class AppStoreAppItem: Identifiable, Hashable, Sendable {
-          '''),
-                      (221, 230, r'''    func matchesSearch(_ query: String) -> Bool {
-                  matchesSearchWords(AppStoreBilingualEngine.normalize(query).split(whereSeparator: { $0.isWhitespace }).map(String.init))
-              }
-
-              func matchesSearchWords(_ words: [String]) -> Bool {
-                  words.allSatisfy { searchIndexTokens.contains($0) }
-              }
-
-          '''),
-                      (250, 251, r'''enum AppStore2026Category: String, CaseIterable, Identifiable, Sendable {
-          '''),
-                      (403, 667, r'''// Cache and signing coordinators live in AppStoreCacheManager.swift and AutoSignPipelineManager.swift.
-          '''),
-                      (906, 907, r'''\t\t\t\t\t\tlet worldGridApps = Array(todayApps.dropFirst(8).prefix(8))
-          '''),
-                      (935, 936, r'''\t\t\t\t.padding(.bottom, 16)
-          '''),
-                      (951, 952, r'''\t\t.onChange(of: viewModel.revision) { _ in
-          '''),
-                      (954, 954, r'''        .onChange(of: _sources.map { $0.objectID }) { _ in
-                      Task { await cache.ensureFetched(sources: _sources, viewModel: viewModel) }
-                  }
-
-          '''),
-                      (1115, 1116, r'''\t\t\t\t.padding(.bottom, 16)
-          '''),
-                      (1131, 1132, r'''\t\t.onChange(of: viewModel.revision) { _ in
-          '''),
-                      (1134, 1134, r'''        .onChange(of: _sources.map { $0.objectID }) { _ in
-                      Task { await cache.ensureFetched(sources: _sources, viewModel: viewModel) }
-                  }
-
-          '''),
-                      (1296, 1297, r'''\t\t\t\t.padding(.bottom, 16)
-          '''),
-                      (1312, 1313, r'''\t\t.onChange(of: viewModel.revision) { _ in
-          '''),
-                      (1315, 1315, r'''        .onChange(of: _sources.map { $0.objectID }) { _ in
-                      Task { await cache.ensureFetched(sources: _sources, viewModel: viewModel) }
-                  }
-
-          '''),
-                      (1323, 1323, r'''    @State private var searchResults: [AppStoreAppItem] = []
-              @FocusState private var searchFieldFocused: Bool
-          '''),
-                      (1334, 1340, r''''''),
-                      (1349, 1349, r'''                    HStack(spacing: 10) {
-                                  Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                                  TextField("الألعاب والتطبيقات والمزيد...", text: $searchText)
-                                      .textInputAutocapitalization(.never)
-                                      .autocorrectionDisabled()
-                                      .focused($searchFieldFocused)
-                                      .submitLabel(.search)
-                                  if !searchText.isEmpty {
-                                      Button { searchText = "" } label: {
-                                          Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                                      }
-                                      .accessibilityLabel("مسح البحث")
-                                  }
-                              }
-                              .padding(13)
-                              .background(Color(white: 0.14), in: RoundedRectangle(cornerRadius: 14))
-                              .padding(.horizontal, 18)
-
-          '''),
-                      (1465, 1466, r'''\t\t\t\t.padding(.bottom, 16)
-          '''),
-                      (1469, 1474, r'''            .scrollDismissesKeyboard(.interactively)
-          '''),
-                      (1483, 1484, r'''        .task(id: XSignSearchIdentity(query: searchText, revision: cache.revision)) {
-                      let words = AppStoreBilingualEngine.normalize(searchText)
-                          .split(whereSeparator: { $0.isWhitespace }).map(String.init)
-                      guard !words.isEmpty else { searchResults = []; return }
-                      do { try await Task.sleep(nanoseconds: 200_000_000) }
-                      catch { return }
-                      let items = cache.allCombinedItems
-                      let worker = Task.detached(priority: .userInitiated) { () -> [AppStoreAppItem] in
-                          var matches: [AppStoreAppItem] = []
-                          for item in items {
-                              guard !Task.isCancelled else { return [] }
-                              if item.matchesSearchWords(words) { matches.append(item) }
-                          }
-                          return matches
-                      }
-                      let matches = await withTaskCancellationHandler {
-                          await worker.value
-                      } onCancel: {
-                          worker.cancel()
-                      }
-                      guard !Task.isCancelled else { return }
-                      searchResults = matches
-                  }
-          \t\t.onChange(of: viewModel.revision) { _ in
-          '''),
-                      (1486, 1486, r'''        .onChange(of: _sources.map { $0.objectID }) { _ in
-                      Task { await cache.ensureFetched(sources: _sources, viewModel: viewModel) }
-                  }
-
-          '''),
-                      (1487, 1487, r'''}
-
-          private struct XSignSearchIdentity: Hashable {
-              let query: String
-              let revision: UInt64
-          '''),
-                      (1493, 1494, r''''''),
-                      (1507, 1512, r'''
-          '''),
-                      (1593, 1594, r'''\t\t\t\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(bannerURL, maximumPixelSize: 1200)) { state in
-          '''),
-                      (1675, 1676, r'''\t\t\t\t\tAppStore2026DownloadButton(app: item.app, isLightPill: true, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
-          '''),
-                      (1894, 1895, r'''\t\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(firstScreen, maximumPixelSize: 1200)) { state in
-          '''),
-                      (1965, 1966, r'''\t\t\t\tAppStore2026DownloadButton(app: item.app, isLightPill: true, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
-          '''),
-                      (2036, 2037, r'''\t\t\t\tAppStore2026DownloadButton(app: item.app, isLightPill: true, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
-          '''),
-                      (2225, 2225, r'''    var sourceProvenance: SourceAppProvenance? = nil
-          '''),
-                      (2232, 2235, r'''    private var appKey: String {
-                  AutoSignPipelineManager.key(for: app)
-              }
-          '''),
-                      (2242, 2243, r'''\t\t\tpipeline.downloadAndAutoSign(app: app, sourceProvenance: sourceProvenance)
-          '''),
-                      (2323, 2324, r'''\t\t\tAppStore2026DownloadButton(app: item.app, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
-          '''),
-                      (2355, 2356, r'''\t\t\tAppStore2026DownloadButton(app: item.app, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
-          '''),
-                      (2507, 2508, r'''\t\t\t\t\tAppStore2026DownloadButton(app: item.app, isLightPill: true, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
-          '''),
-                      (2528, 2529, r'''\t\t\t\t\tLazyHStack(spacing: 10) {
-          '''),
-                      (2530, 2531, r'''\t\t\t\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(url, maximumPixelSize: 760)) { state in
-          '''),
-                      (2596, 2597, r'''\t\t\t\tLazyImage(request: XSignImageRequest.thumbnail(url, maximumPixelSize: Float(size * 2))) { state in
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/Sources/SourcesViewModel.swift',
-                  'result': '41161d205232784f248f81b8658927cb9c1bba9c670cca0e27c3ec8d4633193a',
-                  'base': 'bdc39ebc5affc012a467d8beb28594211c270cb8',
-                  'text': r'''import Foundation
-          import CoreData
-          import AltSourceKit
-          import SwiftUI
-
-          @MainActor
-          final class SourcesViewModel: ObservableObject {
-              static let shared = SourcesViewModel()
-              typealias RepositoryDataHandler = Result<ASRepository, Error>
-
-              @Published private(set) var isFinished = true
-              @Published var sources: [AltSource: ASRepository] = [:]
-              @Published private(set) var revision: UInt64 = 0
-              @Published private(set) var loadErrors: [URL: String] = [:]
-
-              private let loader = XSignRepositoryLoader()
-              private var requestedSources: [AltSource] = []
-              private var requestSerial: UInt64 = 0
-              private var requestedRefresh = false
-
-              func fetchSources(
-                  _ fetchedSources: FetchedResults<AltSource>,
-                  refresh: Bool = false,
-                  batchSize: Int = 3
-              ) async {
-                  requestedSources = Array(fetchedSources)
-                  requestedRefresh = requestedRefresh || refresh
-                  requestSerial &+= 1
-                  guard isFinished else { return }
-
-                  isFinished = false
-                  defer { isFinished = true }
-                  let limit = max(1, min(batchSize, 4))
-
-                  while true {
-                      let serial = requestSerial
-                      let currentSources = requestedSources
-                      let refreshThisPass = requestedRefresh
-                      requestedRefresh = false
-
-                      let validIDs = Set(currentSources.map(\.objectID))
-                      let retained = sources.filter { validIDs.contains($0.key.objectID) }
-                      if retained.count != sources.count {
-                          sources = retained
-                          revision &+= 1
-                      }
-
-                      let pending = currentSources.filter { refreshThisPass || sources[$0] == nil }
-                      var seen = Set<URL>()
-                      let urls = pending.compactMap { source -> URL? in
-                          guard let url = source.sourceURL, seen.insert(url).inserted else { return nil }
-                          return url
-                      }
-
-                      for start in stride(from: 0, to: urls.count, by: limit) {
-                          let batch = Array(urls[start..<min(start + limit, urls.count)])
-                          let results = await withTaskGroup(
-                              of: (URL, ASRepository?, String?).self,
-                              returning: [(URL, ASRepository?, String?)].self
-                          ) { group in
-                              for url in batch {
-                                  group.addTask { [loader] in
-                                      do { return (url, try await loader.load(url, refresh: refreshThisPass), nil) }
-                                      catch { return (url, nil, error.localizedDescription) }
-                                  }
-                              }
-                              var results: [(URL, ASRepository?, String?)] = []
-                              for await result in group { results.append(result) }
-                              return results
-                          }
-
-                          var updated = sources
-                          for (url, repository, error) in results {
-                              loadErrors[url] = error
-                              guard let repository else { continue }
-                              for source in currentSources where source.sourceURL == url {
-                                  updated[source] = repository
-                              }
-                          }
-                          sources = updated
-                          // Same-count app/version/news changes must invalidate the store cache.
-                          revision &+= 1
-                      }
-
-                      guard serial != requestSerial else { break }
-                  }
-              }
-          }
-
-          private actor XSignRepositoryLoader {
-              private let session: URLSession
-
-              init() {
-                  let configuration = URLSessionConfiguration.default
-                  configuration.urlCache = URLCache(
-                      memoryCapacity: 4 * 1024 * 1024,
-                      diskCapacity: 64 * 1024 * 1024,
-                      diskPath: "IPA.BLACK.RepositoryHTTP"
-                  )
-                  configuration.httpMaximumConnectionsPerHost = 3
-                  configuration.timeoutIntervalForRequest = 30
-                  configuration.timeoutIntervalForResource = 90
-                  session = URLSession(configuration: configuration)
-              }
-
-              func load(_ url: URL, refresh: Bool) async throws -> ASRepository {
-                  let request = URLRequest(
-                      url: url,
-                      cachePolicy: refresh ? .reloadRevalidatingCacheData : .useProtocolCachePolicy,
-                      timeoutInterval: 30
-                  )
-                  let (data, response) = try await session.data(for: request)
-                  guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
-                      throw URLError(.badServerResponse)
-                  }
-                  // Actor isolation serializes JSON decoding without blocking the UI.
-                  return try JSONDecoder().decode(ASRepository.self, from: data)
-              }
-          }
-          ''',
-              },
-              {
-                  'path': 'Feather/Views/TabView/TabEnum.swift',
-                  'result': '9c0523c494874ca3880ecbb9fba210adb5409ac7d97e4247597f741bc6462468',
-                  'base': 'fbd1658f0b7c50d52aaca041235ede2b6f7cb6eb',
-                  'edits': [
-                      (24, 25, r'''\t\tcase .library: \t\treturn "Arcade"
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Feather/Views/TabView/VariedTabbarView.swift',
-                  'result': '1f7b6d86ada4fc88558143a07f86dd8ee4babe503cbb32f7d80971e2be05a7b2',
-                  'base': 'a857f77dd669cabf345252368ee64d838599e4a1',
-                  'text': r'''import SwiftUI
-
-          struct VariedTabbarView: View {
-              @State private var selectedTab: TabEnum = .today
-              @ObservedObject private var pipeline = AutoSignPipelineManager.shared
-              @State private var presentedSheet: XSignSheet?
-              @State private var presentedInstallID: String?
-
-              private let tabs: [TabEnum] = [.today, .games, .sources, .library]
-
-              var body: some View {
-                  TabView(selection: $selectedTab) {
-                      ForEach(tabs, id: \.self) { tab in
-                          TabEnum.view(for: tab)
-                              .tag(tab)
-                              .tabItem { Label(tab.title, systemImage: tab.icon) }
-                              .toolbar(.hidden, for: .tabBar)
-                      }
-                  }
-                  .safeAreaInset(edge: .bottom, spacing: 0) {
-                      XSignFloatingDock(selection: $selectedTab, showsSearch: Binding(
-                          get: { if case .search? = presentedSheet { return true }; return false },
-                          set: { if $0 { presentedSheet = .search } }
-                      ))
-                          .frame(maxWidth: 560)
-                          .padding(.horizontal, 16)
-                          .padding(.top, 8)
-                          .padding(.bottom, 6)
-                          .frame(maxWidth: .infinity)
-                  }
-                  .sheet(item: $presentedSheet, onDismiss: {
-                      if let id = presentedInstallID {
-                          presentedInstallID = nil
-                          pipeline.dismissInstallation(id: id)
-                      }
-                      DispatchQueue.main.async { presentInstallationIfReady() }
-                  }) { sheet in
-                      switch sheet {
-                      case .search:
-                          AppStoreSearchView()
-                              .presentationDragIndicator(.visible)
-                              .presentationDetents([.large])
-                      case .installation(let app):
-                          InstallPreviewView(app: app.base, isSharing: app.archive)
-                              .presentationDragIndicator(.visible)
-                              .presentationDetents([.height(200)])
-                      }
-                  }
-                  .onReceive(pipeline.$readyToInstallApp) { _ in
-                      // Published emits before its stored value changes.
-                      DispatchQueue.main.async { presentInstallationIfReady() }
-                  }
-                  .environment(\.layoutDirection, .rightToLeft)
-                  .preferredColorScheme(.dark)
-              }
-
-              @MainActor
-              private func presentInstallationIfReady() {
-                  guard presentedSheet == nil, let app = pipeline.readyToInstallApp else { return }
-                  presentedInstallID = app.id
-                  presentedSheet = .installation(app)
-              }
-          }
-
-          private enum XSignSheet: Identifiable {
-              case search
-              case installation(AnyApp)
-
-              var id: String {
-                  switch self {
-                  case .search: return "search"
-                  case .installation(let app): return "install-" + app.id
-                  }
-              }
-          }
-
-          private struct XSignFloatingDock: View {
-              @Binding var selection: TabEnum
-              @Binding var showsSearch: Bool
-              @Environment(\.accessibilityReduceMotion) private var reduceMotion
-              @ScaledMetric(relativeTo: .caption) private var height: CGFloat = 66
-              @ScaledMetric(relativeTo: .caption) private var labelSize: CGFloat = 12
-
-              // Fixed visual order from the reference: search, Arcade, apps, games, today.
-              private let visualOrder: [TabEnum] = [.library, .sources, .games, .today]
-              private let accent = Color(red: 0.24, green: 0.77, blue: 1)
-
-              var body: some View {
-                  HStack(spacing: 10) {
-                      Button {
-                          showsSearch = true
-                      } label: {
-                          Image(systemName: "magnifyingglass")
-                              .font(.system(size: 25, weight: .semibold))
-                              .foregroundStyle(.white)
-                              .frame(width: height, height: height)
-                              .background { XSignGlassSurface() }
-                      }
-                      .buttonStyle(.plain)
-                      .accessibilityLabel("بحث في التطبيقات والألعاب")
-
-                      HStack(spacing: 0) {
-                          ForEach(visualOrder, id: \.self) { tab in
-                              Button {
-                                  withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-                                      selection = tab
-                                  }
-                              } label: {
-                                  VStack(spacing: 4) {
-                                      dockIcon(tab)
-                                          .frame(width: 30, height: 29)
-                                      Text(tab == .library ? "Arcade" : tab.title)
-                                          .font(.system(size: labelSize, weight: .semibold))
-                                          .lineLimit(1)
-                                          .minimumScaleFactor(0.75)
-                                  }
-                                  .foregroundStyle(selection == tab ? accent : .white.opacity(0.94))
-                                  .frame(maxWidth: .infinity)
-                                  .frame(height: height - 8)
-                                  .contentShape(Capsule())
-                                  .background {
-                                      if selection == tab {
-                                          Capsule().fill(.white.opacity(0.14))
-                                      }
-                                  }
-                              }
-                              .buttonStyle(.plain)
-                              .accessibilityLabel(tab == .library ? "Arcade، مكتبة التوقيع" : tab.title)
-                              .accessibilityAddTraits(selection == tab ? .isSelected : [])
-                          }
-                      }
-                      .padding(4)
-                      .background { XSignGlassSurface() }
-                  }
-                  .environment(\.layoutDirection, .leftToRight)
-              }
-
-              @ViewBuilder
-              private func dockIcon(_ tab: TabEnum) -> some View {
-                  switch tab {
-                  case .library:
-                      XSignJoystickIcon()
-                  case .games:
-                      XSignRocketIcon().fill(style: FillStyle(eoFill: true))
-                  case .sources:
-                      Image(systemName: "square.stack.3d.up.fill")
-                          .font(.system(size: 28, weight: .bold))
-                  default:
-                      Image(systemName: "doc.text.image")
-                          .font(.system(size: 27, weight: .semibold))
-                  }
-              }
-          }
-
-          private struct XSignGlassSurface: View {
-              @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-              var body: some View {
-                  ZStack {
-                      if reduceTransparency {
-                          Capsule().fill(Color(white: 0.15))
-                      } else {
-                          Capsule().fill(.ultraThinMaterial)
-                          Capsule().fill(.white.opacity(0.06))
-                      }
-                      Capsule().strokeBorder(
-                          LinearGradient(
-                              colors: [.white.opacity(0.5), .white.opacity(0.08), .white.opacity(0.24)],
-                              startPoint: .topLeading,
-                              endPoint: .bottomTrailing
-                          ),
-                          lineWidth: 0.9
-                      )
-                  }
-                  .shadow(color: .black.opacity(0.22), radius: 10, y: 4)
-              }
-          }
-
-          private struct XSignJoystickIcon: View {
-              var body: some View {
-                  GeometryReader { geometry in
-                      let w = geometry.size.width
-                      let h = geometry.size.height
-                      Path { p in
-                          p.move(to: CGPoint(x: w * 0.08, y: h * 0.63))
-                          p.addLines([
-                              CGPoint(x: w * 0.5, y: h * 0.42),
-                              CGPoint(x: w * 0.92, y: h * 0.63),
-                              CGPoint(x: w * 0.5, y: h * 0.84)
-                          ])
-                          p.closeSubpath()
-                          p.move(to: CGPoint(x: w * 0.08, y: h * 0.79))
-                          p.addLines([
-                              CGPoint(x: w * 0.5, y: h * 0.99),
-                              CGPoint(x: w * 0.92, y: h * 0.79)
-                          ])
-                      }
-                      .stroke(style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                      Capsule().frame(width: 3.5, height: h * 0.35)
-                          .position(x: w * 0.5, y: h * 0.4)
-                      Circle().frame(width: 9, height: 9)
-                          .position(x: w * 0.5, y: h * 0.12)
-                  }
-              }
-          }
-
-          private struct XSignRocketIcon: Shape {
-              func path(in rect: CGRect) -> Path {
-                  var p = Path()
-                  p.move(to: CGPoint(x: 37, y: 2))
-                  p.addCurve(to: CGPoint(x: 17, y: 9), control1: CGPoint(x: 29, y: 1), control2: CGPoint(x: 22, y: 4))
-                  p.addLine(to: CGPoint(x: 12, y: 15))
-                  p.addCurve(to: CGPoint(x: 4, y: 17), control1: CGPoint(x: 7, y: 12), control2: CGPoint(x: 5, y: 14))
-                  p.addLine(to: CGPoint(x: 1, y: 26))
-                  p.addLine(to: CGPoint(x: 9, y: 24))
-                  p.addLine(to: CGPoint(x: 15, y: 30))
-                  p.addLine(to: CGPoint(x: 13, y: 38))
-                  p.addLine(to: CGPoint(x: 22, y: 34))
-                  p.addCurve(to: CGPoint(x: 24, y: 26), control1: CGPoint(x: 25, y: 31), control2: CGPoint(x: 26, y: 30))
-                  p.addCurve(to: CGPoint(x: 37, y: 2), control1: CGPoint(x: 33, y: 18), control2: CGPoint(x: 37, y: 10))
-                  p.closeSubpath()
-                  p.addEllipse(in: CGRect(x: 24, y: 8, width: 7, height: 7))
-                  p.move(to: CGPoint(x: 8, y: 29))
-                  p.addQuadCurve(to: CGPoint(x: 2, y: 38), control: CGPoint(x: 0, y: 31))
-                  p.addQuadCurve(to: CGPoint(x: 13, y: 33), control: CGPoint(x: 9, y: 39))
-                  p.closeSubpath()
-                  return p.applying(CGAffineTransform(scaleX: rect.width / 40, y: rect.height / 40))
-              }
-          }
-          ''',
-              },
-              {
-                  'path': 'Makefile',
-                  'result': 'a9f5a77994a21af52cd026aa321c8d05f52753b6b831e9f5f089a305a1c36fa0',
-                  'base': '4b867144e122f115a08d481ed04a47e0c5796d14',
-                  'edits': [
-                      (41, 46, r'''\t# Keep the XSign launch storyboard configured in the project and Info.plist.
-
-          '''),
-                  ],
-              },
-              {
-                  'path': 'Scripts/run_download_smoke.py',
-                  'result': '71019684ab418753d2d126b8ccfb90953e941676200209061f576a06c4cfeeae',
-                  'base': None,
-                  'text': r'''#!/usr/bin/env python3
-          """Exercise the real download queue on macOS without UIKit or a test target."""
-          from pathlib import Path
-          from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+          import ast
+          import hashlib
           import json
-          import platform
-          import shutil
           import subprocess
-          import sys
-          import tempfile
-          import threading
-          import time
-
-          ROOT = Path(__file__).resolve().parents[1]
-          stats_lock = threading.Lock()
-          stats = {"active": 0, "peak": 0, "requests": {}}
-
-          class FixtureHandler(BaseHTTPRequestHandler):
-              protocol_version = "HTTP/1.1"
-
-              def do_GET(self):
-                  if self.path == "/stats":
-                      with stats_lock:
-                          payload = json.dumps(stats).encode()
-                      self.send_response(200)
-                      self.send_header("Content-Type", "application/json")
-                      self.send_header("Content-Length", str(len(payload)))
-                      self.send_header("Cache-Control", "no-store")
-                      self.end_headers()
-                      self.wfile.write(payload)
-                      return
-                  with stats_lock:
-                      stats["active"] += 1
-                      stats["peak"] = max(stats["peak"], stats["active"])
-                      stats["requests"][self.path] = stats["requests"].get(self.path, 0) + 1
-                  try:
-                      time.sleep(0.07)
-                      status = 404 if self.path.startswith("/missing") else 200
-                      payload = b"<html>not an IPA</html>" if self.path.startswith("/html") else b"PK\x03\x04" + bytes(1024)
-                      self.send_response(status)
-                      self.send_header("Content-Type", "application/octet-stream")
-                      self.send_header("Content-Length", str(len(payload)))
-                      self.send_header("Cache-Control", "no-store")
-                      self.end_headers()
-                      self.wfile.write(payload)
-                  except (BrokenPipeError, ConnectionResetError):
-                      pass
-                  finally:
-                      with stats_lock:
-                          stats["active"] -= 1
-
-              def log_message(self, *_):
-                  pass
-
-          STUBS = r"""
-          import Foundation
-          import Combine
-
-          struct SourceAppProvenance { let sourceVersionID: String }
-          final class UINotificationFeedbackGenerator {
-              enum Kind { case error, success }
-              func notificationOccurred(_ kind: Kind) {}
-          }
-          enum UIAlertController {
-              static func showAlertWithOk(title: String, message: String) {}
-          }
-          final class BackgroundAudioManager {
-              static let shared = BackgroundAudioManager()
-              func start() {}
-              func stop() {}
-          }
-          final class BackgroundTaskManager {
-              static let shared = BackgroundTaskManager()
-              func startTask(for: String, filename: String) {}
-              func stopTask(for: String, success: Bool) {}
-              func updateProgress(for: String, progress: Double) {}
-          }
-          enum FR {
-              struct Pending {
-                  let url: URL
-                  let completion: (Result<String, Error>) -> Void
-              }
-              static var pending: [Pending] = []
-              static var stagedDirectories: [URL] = []
-              static func importPackageFile(
-                  _ url: URL, download: Download?,
-                  completion: @escaping (Result<String, Error>) -> Void
-              ) {
-                  pending.append(Pending(url: url, completion: completion))
-                  stagedDirectories.append(url.deletingLastPathComponent())
-              }
-              @discardableResult
-              static func succeedNext() -> String {
-                  let entry = pending.removeFirst()
-                  let uuid = UUID().uuidString
-                  entry.completion(.success(uuid))
-                  return uuid
-              }
-          }
-          """
-
-          def main():
-              compiler = shutil.which("swiftc")
-              if compiler is None:
-                  raise SystemExit("swiftc is required. Run this check with the supplied macOS GitHub Actions workflow.")
-              manager = (ROOT / "Feather/Backend/Observable/DownloadManager.swift").read_text()
-              manager = "\n".join(line for line in manager.splitlines()
-                                  if line not in {"import UIKit", "import BackgroundTasks"})
-              gate = (ROOT / "Feather/Utilities/XSignPackageWorkGate.swift").read_text()
-              tests = (ROOT / "Tests/DownloadManagerSmoke.swift").read_text()
-              server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
-              threading.Thread(target=server.serve_forever, daemon=True).start()
-              try:
-                  with tempfile.TemporaryDirectory(prefix="xsign-download-smoke-") as tmp:
-                      source = Path(tmp) / "Smoke.swift"
-                      binary = Path(tmp) / "Smoke"
-                      source.write_text(STUBS + "\n" + manager + "\n" + gate + "\n" + tests)
-                      subprocess.run(
-                          [compiler, "-swift-version", "5", "-target", platform.machine() + "-apple-macosx13.0", "-parse-as-library", str(source), "-o", str(binary)],
-                          check=True, timeout=60
-                      )
-                      subprocess.run([str(binary), str(server.server_port)], check=True, timeout=60)
-              finally:
-                  server.shutdown()
-                  server.server_close()
-
-          if __name__ == "__main__":
-              main()
-          ''',
-              },
-              {
-                  'path': 'Tests/DownloadManagerSmoke.swift',
-                  'result': '7befaf1d40a2a1930401bf1c35d6218dde691d920f9fb82e8d1bb557429e8cdd',
-                  'base': None,
-                  'text': r'''// Compiled with the actual manager and package gate by Scripts/run_download_smoke.py.
-          // UIKit, background UI and package extraction are stubbed; HTTP and file staging are real.
-          import Foundation
-
-          private struct SmokeFailure: Error, CustomStringConvertible {
-              let description: String
-          }
-
-          private func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
-              if !condition() { throw SmokeFailure(description: message) }
-          }
-
-          @MainActor
-          private func waitUntil(_ message: String, _ condition: () -> Bool) async throws {
-              let deadline = Date().addingTimeInterval(8)
-              while !condition() {
-                  if Date() >= deadline { throw SmokeFailure(description: "Timed out: " + message) }
-                  try await Task.sleep(nanoseconds: 10_000_000)
-              }
-          }
-
-          private struct FixtureStats: Decodable {
-              let active: Int
-              let peak: Int
-              let requests: [String: Int]
-          }
-
-          private actor GateProbe {
-              var active = 0
-              var peak = 0
-              var completed = 0
-              func enter() { active += 1; peak = max(peak, active) }
-              func leave() { active -= 1; completed += 1 }
-          }
-
-          @main
-          private struct DownloadManagerSmoke {
-              @MainActor
-              static func main() async throws {
-                  let port = Int(CommandLine.arguments[1])!
-                  func url(_ path: String, alternate: Bool = false) -> URL {
-                      URL(string: "http://\(alternate ? "localhost" : "127.0.0.1"):\(port)\(path)")!
-                  }
-                  func stats() async throws -> FixtureStats {
-                      let (data, _) = try await URLSession.shared.data(from: url("/stats"))
-                      return try JSONDecoder().decode(FixtureStats.self, from: data)
-                  }
-
-                  // Same URL, different callers: one transfer and both exact-UUID callbacks.
-                  let manager = DownloadManager()
-                  var results: [Result<String, Error>] = []
-                  let first = manager.startDownload(from: url("/ok/dedup.ipa")) { results.append($0) }
-                  let duplicate = manager.startDownload(from: url("/ok/dedup.ipa")) { results.append($0) }
-                  try require(first === duplicate, "Repeated taps created separate Download objects")
-                  try await waitUntil("deduplicated import") { FR.pending.count == 1 }
-                  let expectedUUID = FR.succeedNext()
-                  try await waitUntil("both completion handlers") { results.count == 2 }
-                  let firstUUID = try results[0].get()
-                  try require(firstUUID == expectedUUID, "First callback has the wrong UUID")
-                  let secondUUID = try results[1].get()
-                  try require(secondUUID == expectedUUID, "Second callback has the wrong UUID")
-                  let afterDedup = try await stats()
-                  try require(afterDedup.requests["/ok/dedup.ipa"] == 1, "Duplicate HTTP requests were sent")
-                  try require(manager.downloads.isEmpty, "Completed transfer remained active")
-
-                  // Two hostnames share a server: verify the global limit and staging backpressure.
-                  var completed = 0
-                  for index in 0..<7 {
-                      manager.startDownload(from: url("/ok/buffer\(index).ipa", alternate: index % 2 == 1)) { result in
-                          if case .success = result { completed += 1 }
-                      }
-                  }
-                  try await waitUntil("bounded staging") {
-                      FR.pending.count == 1 &&
-                      manager.downloads.filter { $0.state == .waitingForImport }.count == 2
-                  }
-                  try require(manager.downloads.filter { $0.state == .queued }.count == 4, "Pipeline did not stop at three staged/running packages")
-                  let bounded = try await stats()
-                  try require(bounded.peak <= 2, "More than two transfers ran concurrently across hosts")
-                  let started = bounded.requests.filter { $0.key.hasPrefix("/ok/buffer") }.values.reduce(0, +)
-                  try require(started == 3, "Backpressure allowed more than three package downloads")
-                  for _ in 0..<7 {
-                      try await waitUntil("next queued import") { FR.pending.count == 1 }
-                      FR.succeedNext()
-                  }
-                  try await waitUntil("all buffered jobs complete") { completed == 7 && manager.downloads.isEmpty }
-
-                  // HTTP errors and HTML with HTTP 200 must fail and release the queue.
-                  var failures = 0
-                  for path in ["/missing/404.ipa", "/html/fake.ipa"] {
-                      manager.startDownload(from: url(path)) { result in
-                          if case .failure = result { failures += 1 }
-                      }
-                  }
-                  try await waitUntil("bad responses") { failures == 2 && manager.downloads.isEmpty }
-                  try require(FR.pending.isEmpty, "Invalid response was handed to the package importer")
-
-                  // Cancelling a waiting job frees it without starting a new transfer for that job.
-                  var cancelled = 0
-                  for index in 0..<5 {
-                      manager.startDownload(from: url("/ok/cancel\(index).ipa")) { result in
-                          if case .failure(let error) = result,
-                             (error as NSError).code == NSURLErrorCancelled { cancelled += 1 }
-                      }
-                  }
-                  try await waitUntil("cancellation setup") {
-                      FR.pending.count == 1 &&
-                      manager.downloads.filter { $0.state == .waitingForImport }.count == 2
-                  }
-                  let queued = manager.downloads.first { $0.state == .queued }!
-                  manager.cancelDownload(queued)
-                  try require(cancelled == 1, "Queued cancellation did not complete")
-                  for _ in 0..<4 {
-                      try await waitUntil("remaining import") { FR.pending.count == 1 }
-                      FR.succeedNext()
-                  }
-                  try await waitUntil("cancelled queue drains") { manager.downloads.isEmpty }
-                  try require(FR.stagedDirectories.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) }, "Owned staging files leaked after completion")
-
-                  // Exercise the real actor gate with competing tasks.
-                  let probe = GateProbe()
-                  await withTaskGroup(of: Void.self) { group in
-                      for _ in 0..<20 {
-                          group.addTask {
-                              await XSignPackageWorkGate.shared.acquire()
-                              await probe.enter()
-                              try? await Task.sleep(nanoseconds: 2_000_000)
-                              await probe.leave()
-                              await XSignPackageWorkGate.shared.release()
-                          }
-                      }
-                  }
-                  let gatePeak = await probe.peak
-                  let gateCompleted = await probe.completed
-                  try require(gatePeak == 1 && gateCompleted == 20, "Heavy package operations overlapped or a waiter was lost")
-                  print("PASS: deduplication, correlated UUIDs, transfer limits, backpressure, HTTP/HTML rejection, cancellation, staging cleanup and package gate.")
-              }
-          }
-          ''',
-              },
-          ]
+          import textwrap
 
           root = Path.cwd()
-          image_path = Path("Feather/Resources/Assets.xcassets/XSignLaunch.imageset/XSignLaunch.png")
-          image_source = root / "XSignLaunch.png"
-          if not image_source.is_file():
-              image_source = root / image_path
-          if not image_source.is_file():
-              raise SystemExit("Upload your original logo as XSignLaunch.png at the repository root first.")
+          marker = root / "Scripts/xsign-ui-installed.json"
+          pending = root / ".xsign-update-files.json"
+          pending.unlink(missing_ok=True)
+          update_id = "xsign-launch-dock-downloads-v1"
+
+          if marker.is_file():
+              if json.loads(marker.read_text()).get("update_id") != update_id:
+                  raise SystemExit("Unknown installed update.")
+              print("Already installed. Keeping your current source edits.")
+              raise SystemExit(0)
+
+          # Read the reviewed payload recorded in this repository's history.
+          ref = "587d4cf69af14da624c25d55fef3133cc772faed"
+          path = ".github/workflows/xsign-ui-update.yml"
+          raw = subprocess.check_output(["git", "show", f"{ref}:{path}"])
+          blob = hashlib.sha1(
+              b"blob " + str(len(raw)).encode() + b"\0" + raw
+          ).hexdigest()
+
+          if blob != "21e5331506e539d151f153fcd7e2d0841a1beabb":
+              raise SystemExit("The stored update payload does not match review.")
+
+          text = raw.decode("utf-8")
+          start = text.index("          from pathlib import Path\n")
+          end = text.index("          XSIGN_PY\n", start)
+          tree = ast.parse(textwrap.dedent(text[start:end]))
+
+          files = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign):
+                  if any(
+                      isinstance(t, ast.Name) and t.id == "FILES"
+                      for t in node.targets
+                  ):
+                      files = ast.literal_eval(node.value)
+                      break
+
+          if not isinstance(files, list) or not files:
+              raise SystemExit("Missing source update payload.")
+
+          image_path = Path(
+              "Feather/Resources/Assets.xcassets/"
+              "XSignLaunch.imageset/XSignLaunch.png"
+          )
+
+          candidates = [
+              root / "XSignLaunch.png",
+              root / "XSignLaunch.png.PNG",
+              root / "XSignLaunch.PNG",
+              root / image_path,
+          ]
+
+          image_source = next(
+              (p for p in candidates if p.is_file()),
+              None
+          )
+
+          if image_source is None:
+              raise SystemExit(
+                  "Upload the XSign logo PNG at the repository root."
+              )
+
           image = image_source.read_bytes()
           if not image.startswith(b"\x89PNG\r\n\x1a\n"):
-              raise SystemExit("XSignLaunch.png must be an actual PNG file.")
+              raise SystemExit("The logo must be an actual PNG file.")
 
           writes = []
           paths = []
-          for item in FILES:
-              target = root / item["path"]
-              paths.append(item["path"])
-              old = target.read_bytes() if target.is_file() else None
-              if old is not None and hashlib.sha256(old).hexdigest() == item["result"]:
+
+          for item in files:
+              name = item["path"]
+
+              if name.startswith(".github/"):
                   continue
+
+              relative = Path(name)
+              if relative.is_absolute() or ".." in relative.parts:
+                  raise SystemExit("Invalid source path.")
+
+              target = root / relative
+              paths.append(name)
+              old = target.read_bytes() if target.is_file() else None
+
+              if (
+                  old is not None
+                  and hashlib.sha256(old).hexdigest() == item["result"]
+              ):
+                  continue
+
+              if old is None:
+                  if item["base"] is not None:
+                      raise SystemExit("Missing original file: " + name)
+              else:
+                  original = hashlib.sha1(
+                      b"blob " + str(len(old)).encode() + b"\0" + old
+                  ).hexdigest()
+
+                  if original != item["base"]:
+                      raise SystemExit(
+                          "File changed since review; nothing overwritten: "
+                          + name
+                      )
 
               if "text" in item:
                   new = item["text"].replace(r"\t", "\t").encode("utf-8")
               else:
-                  if old is None:
-                      raise SystemExit("Missing original file: " + item["path"])
                   lines = old.decode("utf-8").splitlines(keepends=True)
+
                   for start, end, replacement in reversed(item["edits"]):
-                      lines[start:end] = replacement.replace(r"\t", "\t").splitlines(keepends=True)
+                      lines[start:end] = replacement.replace(
+                          r"\t", "\t"
+                      ).splitlines(keepends=True)
+
                   new = "".join(lines).encode("utf-8")
 
               if hashlib.sha256(new).hexdigest() != item["result"]:
-                  raise SystemExit("Copied code does not match the reviewed content: " + item["path"])
-              if old == new:
-                  continue
-              if old is None:
-                  if item["base"] is not None:
-                      raise SystemExit("Missing original file: " + item["path"])
-              else:
-                  blob = hashlib.sha1(b"blob " + str(len(old)).encode() + b"\0" + old).hexdigest()
-                  if blob != item["base"]:
-                      raise SystemExit("File changed since review; no files were overwritten: " + item["path"])
+                  raise SystemExit("Source validation failed: " + name)
+
               writes.append((target, new))
 
-          paths.append(image_path.as_posix())
           destination = root / image_path
+
           if destination.is_file() and destination.read_bytes() != image:
-              raise SystemExit("An existing launch image differs from the supplied logo; no files were overwritten.")
+              raise SystemExit(
+                  "Existing launch image differs; nothing overwritten."
+              )
+
           if not destination.is_file():
               writes.append((destination, image))
 
-          for target, content in writes:
-              target.parent.mkdir(parents=True, exist_ok=True)
-              target.write_bytes(content)
+          paths.append(image_path.as_posix())
 
-          (root / ".xsign-update-files.json").write_text(json.dumps(paths))
-          print("Applied", len(writes), "files. Native build and smoke tests run next.")
+          marker_data = {
+              "update_id": update_id,
+              "note": "Edit source files directly; later runs preserve your edits.",
+          }
+
+          writes.append((
+              marker,
+              (json.dumps(marker_data, indent=2) + "\n").encode()
+          ))
+
+          paths.append(marker.relative_to(root).as_posix())
+
+          # Validate every original before writing any updated source.
+          for target, data in writes:
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(data)
+
+          pending.write_text(json.dumps(paths))
+          print(
+              "Updated", len(writes),
+              "files. Saving to the selected branch next."
+          )
           XSIGN_PY
+
+      - name: Save source files permanently to the selected branch
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f .xsign-update-files.json ]; then
+            printf 'The update is installed. Building your current source files.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          current_branch="$(git branch --show-current)"
+
+          if [ "$current_branch" != "$TARGET_BRANCH" ]; then
+            printf 'Checkout must be on the selected branch.\n' >&2
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import subprocess
+
+          paths = json.loads(
+              Path(".xsign-update-files.json").read_text()
+          )
+
+          if not paths or any(p.startswith(".github/") for p in paths):
+              raise SystemExit("Expected application source files only.")
+
+          subprocess.run(
+              ["git", "add", "--", *paths],
+              check=True
+          )
+          PY
+
+          if git diff --cached --quiet; then
+            printf 'Source files are already saved.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git \
+            -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Install XSign launch, dock and bounded downloads in source files"
+
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+          saved_commit="$(git rev-parse HEAD)"
+
+          printf 'Saved source files to `%s`. Edit the Swift files directly. Commit: %s/%s/commit/%s\n' \
+            "$TARGET_BRANCH" \
+            "$GITHUB_SERVER_URL" \
+            "$GITHUB_REPOSITORY" \
+            "$saved_commit" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Select installed Xcode 26
         shell: bash
         run: |
           set -euo pipefail
+
           selected="$(python3 - <<'PY'
           from pathlib import Path
-          versions = sorted(Path("/Applications").glob("Xcode_26*.app"))
+
+          versions = sorted(
+              Path("/Applications").glob("Xcode_26*.app")
+          )
+
           if not versions:
               raise SystemExit("Xcode 26 is required.")
+
           print(versions[-1] / "Contents/Developer")
           PY
           )"
+
           sudo xcode-select -s "$selected"
           xcodebuild -version
 
@@ -2180,32 +283,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import plistlib
+
           app = Path("_build/Payload/X-SIGN.app")
           info = plistlib.loads((app / "Info.plist").read_bytes())
+
           assert info.get("UILaunchStoryboardName") == "Launch Screen"
           assert (app / "Launch Screen.storyboardc").is_dir()
+
           print("PASS: XSign launch storyboard is packaged.")
           PY
-
-      - name: Create branch after successful build
-        shell: bash
-        run: |
-          set -euo pipefail
-          branch="xsign-ui-update-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          git switch -c "$branch"
-          python3 - <<'PY'
-          from pathlib import Path
-          import json, subprocess
-          paths = json.loads(Path(".xsign-update-files.json").read_text())
-          subprocess.run(["git", "add", "--", *paths], check=True)
-          PY
-          if git diff --cached --quiet; then
-            printf 'Update is already applied.\n' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Update XSign launch, dock and bounded downloads"
-          git push --set-upstream origin "$branch"
-          printf 'Review and merge this branch: %s\n' "$branch" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
