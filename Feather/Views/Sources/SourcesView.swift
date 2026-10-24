@@ -51,6 +51,68 @@ enum ProtectedSourcesVault {
 	}
 }
 
+// MARK: - Official Apple App Store Metadata Bridge (Fetches Screenshots & Icons Directly from Apple!)
+actor AppStoreLiveMetadataBridge {
+	static let shared = AppStoreLiveMetadataBridge()
+	
+	private var cachedScreenshots: [String: [URL]] = [:]
+	private var cachedArtwork: [String: URL] = [:]
+	
+	func getScreenshots(bundleID: String, fallback: [URL]) async -> [URL] {
+		guard !bundleID.isEmpty else { return fallback }
+		if let mem = cachedScreenshots[bundleID], !mem.isEmpty { return mem }
+		if !fallback.isEmpty { return fallback }
+		
+		let country = Locale.current.region?.identifier ?? "US"
+		guard let lookupURL = URL(string: "https://itunes.apple.com/lookup?bundleId=\(bundleID)&country=\(country)") else {
+			return fallback
+		}
+		
+		do {
+			var request = URLRequest(url: lookupURL)
+			request.timeoutInterval = 8
+			let (data, _) = try await URLSession.shared.data(for: request)
+			if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+			   let results = json["results"] as? [[String: Any]],
+			   let first = results.first {
+				if let screenshotStrings = first["screenshotUrls"] as? [String], !screenshotStrings.isEmpty {
+					let urls = screenshotStrings.compactMap { URL(string: $0) }
+					cachedScreenshots[bundleID] = urls
+					return urls
+				}
+			}
+		} catch {}
+		
+		return fallback
+	}
+	
+	func getHiResIcon(bundleID: String, fallback: URL?) async -> URL? {
+		guard !bundleID.isEmpty else { return fallback }
+		if let mem = cachedArtwork[bundleID] { return mem }
+		
+		let country = Locale.current.region?.identifier ?? "US"
+		guard let lookupURL = URL(string: "https://itunes.apple.com/lookup?bundleId=\(bundleID)&country=\(country)") else {
+			return fallback
+		}
+		
+		do {
+			var request = URLRequest(url: lookupURL)
+			request.timeoutInterval = 8
+			let (data, _) = try await URLSession.shared.data(for: request)
+			if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+			   let results = json["results"] as? [[String: Any]],
+			   let first = results.first {
+				if let art512 = first["artworkUrl512"] as? String, let url = URL(string: art512) {
+					cachedArtwork[bundleID] = url
+					return url
+				}
+			}
+		} catch {}
+		
+		return fallback
+	}
+}
+
 // MARK: - Bilingual Search & Localization Engine
 enum AppStoreBilingualEngine {
 	nonisolated static let synonymGroups: [[String]] = [
@@ -354,8 +416,6 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 	
 	nonisolated static func strictlyClassify(app: ASRepository.App) -> AppStore2026Category {
 		let nameAndBundle = "\(app.name ?? "") \(app.id ?? "") \(app.category ?? "")".lowercased()
-		let desc = (app.localizedDescription ?? app.subtitle ?? "").lowercased()
-		let combined = "\(nameAndBundle) \(desc)"
 		
 		let socialApps = ["instagram", "whatsapp", "tiktok", "snapchat", "twitter", "telegram", "facebook", "discord", "messenger", "reddit", "threads", "watusi", "bhinsta", "uplus", "rocket", "swiftgram", "nicegram", "wicked", "انستقرام", "واتس", "تيك توك", "سناب", "تليجرام", "تويتر", "فيسبوك", "ديسكورد"]
 		if socialApps.contains(where: { nameAndBundle.contains($0) }) { return .social }
@@ -514,7 +574,6 @@ final class AppStoreCacheManager: ObservableObject {
 			}
 		}
 		
-		// دمج ذري واحد لجميع المصادر معاً حتى لا تختفي أو ترمش أي قائمة على الشاشة
 		var finalSnapshot: [(URL?, String?, ASRepository)] = []
 		if let ipaRepo = directLoadedRepos[ProtectedSourcesVault.ipaBlackURLString] {
 			finalSnapshot.append((URL(string: ProtectedSourcesVault.ipaBlackURLString), "xsign.core.ipablack", ipaRepo))
@@ -784,7 +843,6 @@ final class AutoSignPipelineManager: ObservableObject {
 				self.downloadProgress.removeValue(forKey: appKey)
 			}
 			
-			// استخدام معالج الحزم الأصلي FR.handlePackageFile لضمان فك ضغط KhoIPA وتطبيقات store-api بنجاح 100%
 			FR.handlePackageFile(fastFileURL) { [weak self] extractError in
 				try? FileManager.default.removeItem(at: fastFileURL)
 				Task { @MainActor in
@@ -1002,30 +1060,6 @@ struct AppStoreTodayView: View {
 							.padding(.horizontal, 18)
 						}
 						
-						if let secondLive = todayApps.dropFirst().first ?? todayApps.first {
-							NavigationLink {
-								SourceAppsDetailView(
-									sourceURL: secondLive.sourceURL,
-									source: secondLive.repository,
-									app: secondLive.app
-								)
-							} label: {
-								TodayLiveEventHeroCard(
-									outerTitle: nil,
-									outerSubtitle: nil,
-									cornerBadge: "متوفر الآن",
-									eventTag: "تحديث جديد",
-									headline: "انطلق مع \(secondLive.app.currentName)",
-									descriptionText: secondLive.arabicSubtitle,
-									bannerImageURL: secondLive.screenshots.first,
-									cardColor: accentColor,
-									item: secondLive
-								)
-							}
-							.buttonStyle(.plain)
-							.padding(.horizontal, 18)
-						}
-						
 						let expressGridApps = Array(todayApps.prefix(8))
 						if !expressGridApps.isEmpty, let firstTarget = expressGridApps.first {
 							NavigationLink {
@@ -1108,48 +1142,6 @@ struct AppStoreTodayView: View {
 									],
 									items: classicGridApps,
 									fallbackItem: fallback
-								)
-							}
-							.buttonStyle(.plain)
-							.padding(.horizontal, 18)
-						}
-						
-						if let tipsItem = todayApps.dropFirst(4).first ?? todayApps.first {
-							NavigationLink {
-								SourceAppsDetailView(
-									sourceURL: tipsItem.sourceURL,
-									source: tipsItem.repository,
-									app: tipsItem.app
-								)
-							} label: {
-								TodayEditorialTipsCard(item: tipsItem)
-							}
-							.buttonStyle(.plain)
-							.padding(.horizontal, 18)
-						}
-						
-						let worldGridApps = Array(todayApps.shuffled().prefix(8))
-						if !worldGridApps.isEmpty, let worldFallback = worldGridApps.first {
-							NavigationLink {
-								AppStore2026CategoryListView(
-									category: .topApps,
-									items: worldGridApps
-								)
-							} label: {
-								TodayTwoRowIconGridCard(
-									outerTitle: "شيّد عوالم مذهلة",
-									outerSubtitle: "اصنع وابتكر في هذه التطبيقات الرائعة",
-									outerPuzzleIcon: true,
-									caption: "المفضلة لدينا",
-									headline: "شيّد الأمجاد الرائعة",
-									descriptionText: nil,
-									gradientColors: [
-										Color(red: 0.48, green: 0.46, blue: 0.62),
-										Color(red: 0.56, green: 0.66, blue: 0.78),
-										Color(red: 0.46, green: 0.60, blue: 0.72)
-									],
-									items: worldGridApps,
-									fallbackItem: worldFallback
 								)
 							}
 							.buttonStyle(.plain)
@@ -1288,18 +1280,6 @@ struct SourcesView: View {
 								subtitle: "أفضل التطبيقات المختارة لك",
 								items: Array(cache.pureAppsOnly.prefix(18))
 							)
-							
-							let socialApps = cache.pureAppsOnly.filter { $0.category == .social }
-							if !socialApps.isEmpty {
-								TodayFourAppsListCard(
-									outerTitle: "تواصل بلا حدود",
-									outerSubtitle: "أحدث نسخ تطبيقات التواصل الاجتماعي",
-									innerCaption: "التواصل الاجتماعي",
-									innerTitle: "تطبيقات المحادثة والمشاركة",
-									items: Array(socialApps.prefix(4))
-								)
-								.padding(.horizontal, 18)
-							}
 						}
 						
 						HStack {
@@ -1465,15 +1445,6 @@ struct AppStoreGamesView: View {
 								.padding(.horizontal, 18)
 							}
 							
-							TodayFourAppsListCard(
-								outerTitle: "واصل الركض!",
-								outerSubtitle: "إلى متى يمكنك الصمود في هذه الألعاب؟",
-								innerCaption: "أفضل الألعاب",
-								innerTitle: "جرّب هذه الألعاب الرائجة",
-								items: Array(cache.pureGamesOnly.prefix(4))
-							)
-							.padding(.horizontal, 18)
-							
 							AppStore2026ThreeRowSection(
 								title: "الألعاب الأكثر تنزيلاً",
 								subtitle: "أقوى الألعاب المختارة لك",
@@ -1543,10 +1514,6 @@ struct AppStoreSearchView: View {
 		sortDescriptors: [NSSortDescriptor(keyPath: \AltSource.name, ascending: true)]
 	) private var _sources: FetchedResults<AltSource>
 	
-	private var suggestedApps: [AppStoreAppItem] {
-		Array(cache.allCombinedItems.prefix(3))
-	}
-	
 	private var searchResults: [AppStoreAppItem] {
 		let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard !q.isEmpty else { return [] }
@@ -1563,49 +1530,6 @@ struct AppStoreSearchView: View {
 					)
 					
 					if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-						if !suggestedApps.isEmpty {
-							VStack(alignment: .leading, spacing: 14) {
-								HStack(spacing: 6) {
-									Text("مقترحات")
-										.font(.system(size: 22, weight: .bold))
-										.foregroundStyle(.white)
-									Image(systemName: "chevron.left")
-										.font(.system(size: 16, weight: .bold))
-										.foregroundStyle(.secondary)
-									Spacer()
-								}
-								.padding(.horizontal, 18)
-								
-								VStack(spacing: 10) {
-									ForEach(Array(suggestedApps.enumerated()), id: \.element.id) { index, item in
-										NavigationLink {
-											SourceAppsDetailView(
-												sourceURL: item.sourceURL,
-												source: item.repository,
-												app: item.app
-											)
-										} label: {
-											if index == 0 {
-												AppStore2026SuggestedHighlightRow(item: item)
-											} else {
-												AppStore2026AppRow(item: item)
-													.padding(.horizontal, 14)
-													.padding(.vertical, 6)
-											}
-										}
-										.buttonStyle(.plain)
-										
-										if index == 1 {
-											Divider()
-												.background(Color.white.opacity(0.1))
-												.padding(.leading, 76)
-										}
-									}
-								}
-								.padding(.horizontal, 18)
-							}
-						}
-						
 						VStack(alignment: .leading, spacing: 14) {
 							HStack(spacing: 6) {
 								Text("تصفح")
@@ -1653,10 +1577,6 @@ struct AppStoreSearchView: View {
 									Text("لا توجد نتائج لـ \"\(searchText)\"")
 										.font(.headline)
 										.foregroundStyle(.white)
-									Text("جرب البحث بالعربية أو الإنجليزية (مثل: انستقرام أو Instagram)")
-										.font(.caption)
-										.foregroundStyle(.secondary)
-										.multilineTextAlignment(.center)
 								}
 								.frame(maxWidth: .infinity)
 								.padding(.top, 60)
@@ -1773,6 +1693,8 @@ struct TodayLiveEventHeroCard: View {
 	let cardColor: Color
 	let item: AppStoreAppItem
 	
+	@State private var liveScreenshots: [URL] = []
+	
 	var body: some View {
 		VStack(alignment: .leading, spacing: 10) {
 			if let outerTitle {
@@ -1802,7 +1724,8 @@ struct TodayLiveEventHeroCard: View {
 							endPoint: .bottom
 						)
 						
-						if let bannerURL = bannerImageURL {
+						let displayBanner = bannerImageURL ?? liveScreenshots.first
+						if let bannerURL = displayBanner {
 							LazyImage(url: bannerURL) { state in
 								if let image = state.image {
 									image
@@ -1815,7 +1738,7 @@ struct TodayLiveEventHeroCard: View {
 							}
 							.processors([.resize(size: CGSize(width: 500, height: 500))])
 						} else {
-							AppStoreIconView(url: item.app.iconURL, size: 138)
+							AppStoreIconView(url: item.app.iconURL, bundleID: item.app.id, size: 138)
 								.shadow(color: .black.opacity(0.45), radius: 18, x: 0, y: 10)
 								.frame(maxWidth: .infinity, maxHeight: .infinity)
 								.offset(y: -38)
@@ -1871,7 +1794,7 @@ struct TodayLiveEventHeroCard: View {
 					.background(Color.white.opacity(0.14))
 				
 				HStack(spacing: 12) {
-					AppStoreIconView(url: item.app.iconURL, size: 52)
+					AppStoreIconView(url: item.app.iconURL, bundleID: item.app.id, size: 52)
 					
 					VStack(alignment: .leading, spacing: 2) {
 						Text(item.app.currentName)
@@ -1897,6 +1820,11 @@ struct TodayLiveEventHeroCard: View {
 				RoundedRectangle(cornerRadius: 28, style: .continuous)
 					.stroke(Color.white.opacity(0.10), lineWidth: 0.7)
 			)
+			.task {
+				if bannerImageURL == nil && item.screenshots.isEmpty, let bID = item.app.id {
+					liveScreenshots = await AppStoreLiveMetadataBridge.shared.getScreenshots(bundleID: bID, fallback: [])
+				}
+			}
 		}
 	}
 }
@@ -1954,7 +1882,7 @@ struct TodayTwoRowIconGridCard: View {
 				VStack(spacing: 16) {
 					HStack(spacing: 14) {
 						ForEach(topRowItems) { appItem in
-							AppStoreIconView(url: appItem.app.iconURL, size: 84)
+							AppStoreIconView(url: appItem.app.iconURL, bundleID: appItem.app.id, size: 84)
 								.shadow(color: .black.opacity(0.28), radius: 10, x: 0, y: 5)
 						}
 					}
@@ -1962,7 +1890,7 @@ struct TodayTwoRowIconGridCard: View {
 					
 					HStack(spacing: 14) {
 						ForEach(bottomRowItems) { appItem in
-							AppStoreIconView(url: appItem.app.iconURL, size: 84)
+							AppStoreIconView(url: appItem.app.iconURL, bundleID: appItem.app.id, size: 84)
 								.shadow(color: .black.opacity(0.28), radius: 10, x: 0, y: 5)
 						}
 					}
@@ -2087,6 +2015,8 @@ struct TodayFullArtworkDockCard: View {
 	let item: AppStoreAppItem
 	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
+	@State private var liveScreenshots: [URL] = []
+	
 	private var baseColor: Color {
 		item.app.tintColor ?? Color(hex: userTintHex)
 	}
@@ -2104,7 +2034,8 @@ struct TodayFullArtworkDockCard: View {
 					endPoint: .bottomLeading
 				)
 				
-				if let firstScreen = item.screenshots.first {
+				let displayImg = item.screenshots.first ?? liveScreenshots.first
+				if let firstScreen = displayImg {
 					LazyImage(url: firstScreen) { state in
 						if let image = state.image {
 							image
@@ -2116,7 +2047,7 @@ struct TodayFullArtworkDockCard: View {
 					}
 					.processors([.resize(size: CGSize(width: 500, height: 500))])
 				} else {
-					AppStoreIconView(url: item.app.iconURL, size: 128)
+					AppStoreIconView(url: item.app.iconURL, bundleID: item.app.id, size: 128)
 						.shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
 						.frame(maxWidth: .infinity, maxHeight: .infinity)
 						.offset(y: -35)
@@ -2162,7 +2093,7 @@ struct TodayFullArtworkDockCard: View {
 			.frame(height: 330)
 			
 			HStack(spacing: 12) {
-				AppStoreIconView(url: item.app.iconURL, size: 50)
+				AppStoreIconView(url: item.app.iconURL, bundleID: item.app.id, size: 50)
 				
 				VStack(alignment: .leading, spacing: 2) {
 					Text(item.app.currentName)
@@ -2188,77 +2119,11 @@ struct TodayFullArtworkDockCard: View {
 			RoundedRectangle(cornerRadius: 28, style: .continuous)
 				.stroke(Color.white.opacity(0.10), lineWidth: 0.6)
 		)
-	}
-}
-
-struct TodayEditorialTipsCard: View {
-	let item: AppStoreAppItem
-	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
-	
-	var body: some View {
-		VStack(spacing: 0) {
-			ZStack(alignment: .bottomLeading) {
-				LinearGradient(
-					colors: [
-						Color(hex: userTintHex).opacity(0.35),
-						Color(red: 0.05, green: 0.18, blue: 0.36),
-						Color(red: 0.03, green: 0.12, blue: 0.24)
-					],
-					startPoint: .topLeading,
-					endPoint: .bottomTrailing
-				)
-				
-				AppStoreIconView(url: item.app.iconURL, size: 132)
-					.shadow(color: .black.opacity(0.45), radius: 16, x: 0, y: 8)
-					.frame(maxWidth: .infinity, maxHeight: .infinity)
-					.offset(y: -36)
-				
-				VStack(alignment: .leading, spacing: 4) {
-					Text("البدء")
-						.font(.system(size: 13, weight: .bold))
-						.foregroundStyle(.white.opacity(0.80))
-					Text("٥ نصائح لاحتراف\n\(item.app.currentName)")
-						.font(.system(size: 27, weight: .heavy))
-						.foregroundStyle(.white)
-						.lineLimit(2)
-						.multilineTextAlignment(.leading)
-				}
-				.frame(maxWidth: .infinity, alignment: .leading)
-				.padding(.horizontal, 20)
-				.padding(.bottom, 18)
+		.task {
+			if item.screenshots.isEmpty, let bID = item.app.id {
+				liveScreenshots = await AppStoreLiveMetadataBridge.shared.getScreenshots(bundleID: bID, fallback: [])
 			}
-			.frame(height: 315)
-			
-			Divider()
-				.background(Color.white.opacity(0.12))
-			
-			HStack(spacing: 12) {
-				AppStoreIconView(url: item.app.iconURL, size: 50)
-				
-				VStack(alignment: .leading, spacing: 2) {
-					Text(item.app.currentName)
-						.font(.system(size: 16, weight: .bold))
-						.foregroundStyle(.white)
-						.lineLimit(1)
-					Text(item.arabicSubtitle)
-						.font(.caption)
-						.foregroundStyle(.white.opacity(0.75))
-						.lineLimit(1)
-				}
-				
-				Spacer()
-				
-				AppStore2026DownloadButton(app: item.app, isLightPill: true)
-			}
-			.padding(.horizontal, 18)
-			.padding(.vertical, 14)
-			.background(Color(red: 0.04, green: 0.14, blue: 0.28))
 		}
-		.clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-		.overlay(
-			RoundedRectangle(cornerRadius: 28, style: .continuous)
-				.stroke(Color.white.opacity(0.10), lineWidth: 0.6)
-		)
 	}
 }
 
@@ -2435,7 +2300,6 @@ struct CustomSafeAddSourceSheet: View {
 // MARK: - Unified Download & Auto-Sign Button (Live % Progress + Instant Sign)
 struct AppStore2026DownloadButton: View {
 	let app: ASRepository.App
-	var useCloudStyle: Bool = false
 	var isLightPill: Bool = false
 	@ObservedObject private var pipeline = AutoSignPipelineManager.shared
 	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
@@ -2520,11 +2384,10 @@ struct AppStore2026DownloadButton: View {
 
 struct AppStore2026AppRow: View {
 	let item: AppStoreAppItem
-	var useCloudIcon: Bool = false
 	
 	var body: some View {
 		HStack(spacing: 12) {
-			AppStoreIconView(url: item.app.iconURL, size: 58)
+			AppStoreIconView(url: item.app.iconURL, bundleID: item.app.id, size: 58)
 			
 			VStack(alignment: .leading, spacing: 3) {
 				Text(item.app.currentName)
@@ -2544,43 +2407,6 @@ struct AppStore2026AppRow: View {
 	}
 }
 
-struct AppStore2026SuggestedHighlightRow: View {
-	let item: AppStoreAppItem
-	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
-	
-	var body: some View {
-		HStack(spacing: 12) {
-			AppStoreIconView(url: item.app.iconURL, size: 60)
-			
-			VStack(alignment: .leading, spacing: 3) {
-				Text(item.app.currentName)
-					.font(.system(size: 16, weight: .bold))
-					.foregroundStyle(.white)
-					.lineLimit(1)
-				Text(item.arabicSubtitle)
-					.font(.system(size: 13))
-					.foregroundStyle(.secondary)
-					.lineLimit(1)
-				Text("مقترح")
-					.font(.system(size: 10, weight: .bold))
-					.foregroundStyle(.white)
-					.padding(.horizontal, 6)
-					.padding(.vertical, 2)
-					.background(Color(hex: userTintHex), in: RoundedRectangle(cornerRadius: 4))
-			}
-			
-			Spacer()
-			
-			AppStore2026DownloadButton(app: item.app)
-		}
-		.padding(12)
-		.background(
-			RoundedRectangle(cornerRadius: 20, style: .continuous)
-				.fill(Color(red: 0.08, green: 0.13, blue: 0.22))
-		)
-	}
-}
-
 struct AppStore2026BrowseCategoryTile: View {
 	let category: AppStore2026Category
 	let previewApps: [AppStoreAppItem]
@@ -2596,11 +2422,11 @@ struct AppStore2026BrowseCategoryTile: View {
 			Group {
 				if previewApps.count >= 2 {
 					ZStack {
-						AppStoreIconView(url: previewApps[1].app.iconURL, size: 40)
+						AppStoreIconView(url: previewApps[1].app.iconURL, bundleID: previewApps[1].app.id, size: 40)
 							.rotationEffect(.degrees(12))
 							.offset(x: -14, y: 8)
 						
-						AppStoreIconView(url: previewApps[0].app.iconURL, size: 44)
+						AppStoreIconView(url: previewApps[0].app.iconURL, bundleID: previewApps[0].app.id, size: 44)
 							.rotationEffect(.degrees(-10))
 							.offset(x: 10, y: -4)
 					}
@@ -2708,7 +2534,7 @@ struct AppStore2026FeaturedBanner: View {
 				)
 				
 				HStack(spacing: 12) {
-					AppStoreIconView(url: item.app.iconURL, size: 50)
+					AppStoreIconView(url: item.app.iconURL, bundleID: item.app.id, size: 50)
 					
 					VStack(alignment: .leading, spacing: 2) {
 						Text(item.app.currentName)
@@ -2735,17 +2561,20 @@ struct AppStore2026FeaturedBanner: View {
 	}
 }
 
+// بطاقة نتائج البحث مع سكرين شوتس مسحوبة مباشرة من Apple App Store!
 struct AppStore2026SearchResultCard: View {
 	let item: AppStoreAppItem
+	@State private var liveScreenshots: [URL] = []
 	
 	var body: some View {
 		VStack(alignment: .leading, spacing: 14) {
 			AppStore2026AppRow(item: item)
 			
-			if !item.screenshots.isEmpty {
+			let displayScreenshots = item.screenshots.isEmpty ? liveScreenshots : item.screenshots
+			if !displayScreenshots.isEmpty {
 				ScrollView(.horizontal, showsIndicators: false) {
 					HStack(spacing: 10) {
-						ForEach(Array(item.screenshots.prefix(3)), id: \.self) { url in
+						ForEach(Array(displayScreenshots.prefix(3)), id: \.self) { url in
 							LazyImage(url: url) { state in
 								if let image = state.image {
 									image
@@ -2769,6 +2598,11 @@ struct AppStore2026SearchResultCard: View {
 			RoundedRectangle(cornerRadius: 22, style: .continuous)
 				.fill(AppStoreTheme.cardSurface)
 		)
+		.task {
+			if item.screenshots.isEmpty, let bID = item.app.id {
+				liveScreenshots = await AppStoreLiveMetadataBridge.shared.getScreenshots(bundleID: bID, fallback: [])
+			}
+		}
 	}
 }
 
@@ -2805,14 +2639,18 @@ struct AppStore2026CategoryListView: View {
 	}
 }
 
+// أيقونة التطبيق الذكية: إن لم تكن متوفرة في السورس، تسحب الأيقونة الرسمية من App Store
 struct AppStoreIconView: View {
 	let url: URL?
+	var bundleID: String? = nil
 	let size: CGFloat
+	@State private var appleIconURL: URL? = nil
 	
 	var body: some View {
 		Group {
-			if let url {
-				LazyImage(url: url) { state in
+			let effectiveURL = appleIconURL ?? url
+			if let effectiveURL {
+				LazyImage(url: effectiveURL) { state in
 					if let image = state.image {
 						image
 							.resizable()
@@ -2832,6 +2670,11 @@ struct AppStoreIconView: View {
 			RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
 				.stroke(Color.white.opacity(0.14), lineWidth: 0.6)
 		)
+		.task {
+			if url == nil, let bID = bundleID {
+				appleIconURL = await AppStoreLiveMetadataBridge.shared.getHiResIcon(bundleID: bID, fallback: nil)
+			}
+		}
 	}
 	
 	private var placeholder: some View {
