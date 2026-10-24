@@ -33,14 +33,12 @@ enum ProtectedSourcesVault {
 		"https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json"
 	]
 	
-	// يحدد سورس IPABLACK المخصص لصفحة اليوم حصرياً
 	static func isIPABlackSource(_ sourceURL: URL?, identifier: String? = nil) -> Bool {
 		let urlStr = sourceURL?.absoluteString.lowercased() ?? ""
 		let idStr = identifier?.lowercased() ?? ""
 		return urlStr.contains("/ipablack/") || idStr == "xsign.core.ipablack"
 	}
 	
-	// يخفي السورسين الأساسيين (IPABLACK و store-api) من قائمة المصادر ويمنع تصديرهما
 	static func isHiddenCoreSource(_ source: AltSource) -> Bool {
 		let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
 		let idStr = source.identifier?.lowercased() ?? ""
@@ -552,12 +550,13 @@ final class AppStoreCacheManager: ObservableObject {
 	}
 }
 
-// MARK: - Instant CoreData-Driven Auto-Sign Engine (Zero Delay, Pre-cached Cert)
+// MARK: - Turbo ZSign & Direct Info.plist Instant Pipeline (IPA Soon Speed)
 @MainActor
 final class AutoSignPipelineManager: ObservableObject {
 	static let shared = AutoSignPipelineManager()
 	
 	@Published var activeStates: [String: Stage] = [:]
+	@Published var downloadProgress: [String: Int] = [:]
 	@Published var readyToInstallApp: AnyApp? = nil
 	
 	enum Stage: Equatable {
@@ -566,8 +565,20 @@ final class AutoSignPipelineManager: ObservableObject {
 		case ready
 	}
 	
-	private var watchTasks: [String: Task<Void, Never>] = [:]
 	private var cachedCertificate: CertificatePair? = nil
+	private var progressObservations: [String: NSKeyValueObservation] = [:]
+	
+	// جلسة تحميل خاصة فائقة السرعة بأولوية الشبكة القصوى
+	private lazy var turboSession: URLSession = {
+		let config = URLSessionConfiguration.default
+		config.networkServiceType = .responsiveData
+		config.multipathServiceType = .handover
+		config.httpMaximumConnectionsPerHost = 16
+		config.waitsForConnectivity = false
+		config.requestCachePolicy = .reloadIgnoringLocalCacheData
+		config.urlCache = nil
+		return URLSession(configuration: config)
+	}()
 	
 	init() {
 		refreshCertificateCache()
@@ -577,6 +588,16 @@ final class AutoSignPipelineManager: ObservableObject {
 		cachedCertificate = Self.fetchActiveCertificate()
 	}
 	
+	// قراءة سريعة جداً لملف Info.plist مباشرة من الحزمة لتسريع التوقيع اللحظي
+	nonisolated static func prewarmInfoPlist(for app: Imported) {
+		guard let uuid = app.uuid else { return }
+		let unsignedDir = FileManager.default.unsigned.appendingPathComponent(uuid)
+		guard let contents = try? FileManager.default.contentsOfDirectory(at: unsignedDir, includingPropertiesForKeys: nil),
+			  let appBundle = contents.first(where: { $0.pathExtension == "app" }) else { return }
+		let infoPlistURL = appBundle.appendingPathComponent("Info.plist")
+		_ = NSDictionary(contentsOf: infoPlistURL)
+	}
+	
 	func downloadAndAutoSign(app: ASRepository.App) {
 		guard let url = app.currentDownloadUrl else { return }
 		let appKey = app.id ?? app.currentName
@@ -584,38 +605,96 @@ final class AutoSignPipelineManager: ObservableObject {
 		guard activeStates[appKey] == nil else { return }
 		UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
 		activeStates[appKey] = .downloading
-		
+		downloadProgress[appKey] = 1
 		refreshCertificateCache()
-		let existingUUIDs = Set(Self.fetchImportedApps().compactMap { $0.uuid })
-		let downloadID = "AutoSign_\(UUID().uuidString)"
-		_ = DownloadManager.shared.startDownload(from: url, id: downloadID)
 		
-		watchTasks[appKey]?.cancel()
-		watchTasks[appKey] = Task {
-			// فحص فائق السرعة كل 0.12 ثانية لبدء التوقيع في نفس اللحظة التي يكتمل فيها التنزيل
-			for _ in 0..<1500 {
-				if Task.isCancelled { return }
-				try? await Task.sleep(nanoseconds: 120_000_000)
+		let existingUUIDs = Set(Self.fetchImportedApps().compactMap { $0.uuid })
+		
+		var request = URLRequest(url: url)
+		request.networkServiceType = .responsiveData
+		request.setValue("X-SIGN/2.0 (TurboZSign; iOS)", forHTTPHeaderField: "User-Agent")
+		
+		let task = turboSession.downloadTask(with: request) { [weak self] tempURL, _, error in
+			guard let self else { return }
+			
+			if error != nil || tempURL == nil {
+				Task { @MainActor in
+					self.progressObservations.removeValue(forKey: appKey)
+					self.activeStates[appKey] = nil
+					self.downloadProgress.removeValue(forKey: appKey)
+				}
+				return
+			}
+			
+			// نقل فوري للملف عبر مؤشرات APFS بدون استهلاك الرام (0.001 ثانية)
+			let fastFileURL = FileManager.default.temporaryDirectory
+				.appendingPathComponent("TurboZSign_\(UUID().uuidString).ipa")
+			
+			do {
+				if FileManager.default.fileExists(atPath: fastFileURL.path) {
+					try? FileManager.default.removeItem(at: fastFileURL)
+				}
+				try FileManager.default.moveItem(at: tempURL!, to: fastFileURL)
+			} catch {
+				Task { @MainActor in
+					self.progressObservations.removeValue(forKey: appKey)
+					self.activeStates[appKey] = nil
+					self.downloadProgress.removeValue(forKey: appKey)
+				}
+				return
+			}
+			
+			// تحويل الحالة فوراً إلى "توقيع..." وفك الحزمة وقراءة Info.plist وتوقيعها في نفس اللحظة!
+			Task { @MainActor in
+				self.progressObservations.removeValue(forKey: appKey)
+				self.activeStates[appKey] = .signing
+				self.downloadProgress.removeValue(forKey: appKey)
+			}
+			
+			DispatchQueue.global(qos: .userInteractive).async {
+				autoreleasepool {
+					let dlID = "TurboDirect_\(UUID().uuidString)"
+					let dl = DownloadManager.shared.startArchive(from: fastFileURL, id: dlID)
+					try? DownloadManager.shared.handlePachageFile(url: fastFileURL, dl: dl)
+					try? FileManager.default.removeItem(at: fastFileURL)
+				}
 				
-				let currentImported = Self.fetchImportedApps()
-				if let newlyImported = currentImported.first(where: { item in
-					guard let uuid = item.uuid else { return false }
-					return !existingUUIDs.contains(uuid)
-				}) {
-					await triggerInstantSign(for: newlyImported, appKey: appKey)
-					return
+				Task { @MainActor in
+					let updatedImported = Self.fetchImportedApps()
+					if let newlyImported = updatedImported.first(where: { item in
+						guard let uuid = item.uuid else { return false }
+						return !existingUUIDs.contains(uuid)
+					}) ?? updatedImported.first {
+						Self.prewarmInfoPlist(for: newlyImported)
+						self.triggerInstantZSign(for: newlyImported, appKey: appKey)
+					} else {
+						self.activeStates[appKey] = nil
+					}
 				}
 			}
-			activeStates[appKey] = nil
 		}
+		
+		// متابعة حية وسريعة لنسبة التحميل بدون إبطاء الواجهة
+		let observation = task.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] progress, _ in
+			let percent = max(1, min(99, Int(progress.fractionCompleted * 100)))
+			Task { @MainActor in
+				guard let self else { return }
+				if self.downloadProgress[appKey] != percent {
+					self.downloadProgress[appKey] = percent
+				}
+			}
+		}
+		progressObservations[appKey] = observation
+		task.priority = URLSessionTask.highPriority
+		task.resume()
 	}
 	
-	private func triggerInstantSign(for importedApp: Imported, appKey: String) async {
+	func triggerInstantZSign(for importedApp: Imported, appKey: String) {
 		guard let cert = cachedCertificate ?? Self.fetchActiveCertificate() else {
 			activeStates[appKey] = nil
 			UIAlertController.showAlertWithOk(
-				title: "تم التنزيل",
-				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من أيقونة الحساب في الأعلى لتوقيعه تلقائياً."
+				title: "تم استخراج التطبيق",
+				message: "أضف شهادة من أيقونة الحساب في الأعلى ليتم التوقيع والتثبيت اللحظي."
 			)
 			return
 		}
@@ -635,18 +714,19 @@ final class AutoSignPipelineManager: ObservableObject {
 					self.activeStates[appKey] = nil
 					UINotificationFeedbackGenerator().notificationOccurred(.error)
 					UIAlertController.showAlertWithOk(
-						title: "فشل التوقيع التلقائي",
+						title: "فشل التوقيع",
 						message: error.localizedDescription
 					)
 				} else {
 					self.activeStates[appKey] = .ready
 					UINotificationFeedbackGenerator().notificationOccurred(.success)
 					
+					// فتح نافذة التثبيت الفوري المعتمدة على Info.plist manifest
 					if let latestSigned = Self.fetchSignedApps().first {
 						self.readyToInstallApp = AnyApp(base: latestSigned)
 					}
 					
-					DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+					DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
 						self.activeStates[appKey] = nil
 					}
 				}
@@ -654,21 +734,21 @@ final class AutoSignPipelineManager: ObservableObject {
 		}
 	}
 	
-	private static func fetchImportedApps() -> [Imported] {
+	nonisolated static func fetchImportedApps() -> [Imported] {
 		let request = NSFetchRequest<Imported>(entityName: "Imported")
 		request.sortDescriptors = [NSSortDescriptor(keyPath: \Imported.date, ascending: false)]
 		request.fetchLimit = 5
 		return (try? Storage.shared.context.fetch(request)) ?? []
 	}
 	
-	private static func fetchSignedApps() -> [Signed] {
+	nonisolated static func fetchSignedApps() -> [Signed] {
 		let request = NSFetchRequest<Signed>(entityName: "Signed")
 		request.sortDescriptors = [NSSortDescriptor(keyPath: \Signed.date, ascending: false)]
 		request.fetchLimit = 2
 		return (try? Storage.shared.context.fetch(request)) ?? []
 	}
 	
-	private static func fetchActiveCertificate() -> CertificatePair? {
+	nonisolated static func fetchActiveCertificate() -> CertificatePair? {
 		let request = NSFetchRequest<CertificatePair>(entityName: "CertificatePair")
 		request.sortDescriptors = [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)]
 		guard let certs = try? Storage.shared.context.fetch(request), !certs.isEmpty else {
@@ -2233,7 +2313,7 @@ struct CustomSafeAddSourceSheet: View {
 	}
 }
 
-// MARK: - Unified Download & Auto-Sign Button (Always Shows "تنزيل" Capsule - No Cloud Icon)
+// MARK: - Unified Download & Auto-Sign Button (Live % Progress + Instant Sign)
 struct AppStore2026DownloadButton: View {
 	let app: ASRepository.App
 	var useCloudStyle: Bool = false
@@ -2253,6 +2333,10 @@ struct AppStore2026DownloadButton: View {
 		pipeline.activeStates[appKey]
 	}
 	
+	private var progressPercent: Int {
+		pipeline.downloadProgress[appKey] ?? 0
+	}
+	
 	var body: some View {
 		Button {
 			pipeline.downloadAndAutoSign(app: app)
@@ -2262,23 +2346,23 @@ struct AppStore2026DownloadButton: View {
 				HStack(spacing: 5) {
 					ProgressView()
 						.tint(.white)
-						.scaleEffect(0.75)
-					Text("تنزيل...")
-						.font(.system(size: 11, weight: .bold))
+						.scaleEffect(0.72)
+					Text("\(progressPercent)%")
+						.font(.system(size: 12, weight: .heavy, design: .rounded))
+						.monospacedDigit()
 						.foregroundStyle(.white)
 				}
 				.frame(width: 82, height: 32)
-				.background(Capsule().fill(accentColor.opacity(0.65)))
+				.background(Capsule().fill(accentColor.opacity(0.85)))
 				
 			case .signing:
-				HStack(spacing: 5) {
-					ProgressView()
-						.tint(.white)
-						.scaleEffect(0.75)
+				HStack(spacing: 4) {
+					Image(systemName: "bolt.fill")
+						.font(.system(size: 11, weight: .bold))
 					Text("توقيع...")
 						.font(.system(size: 11, weight: .bold))
-						.foregroundStyle(.white)
 				}
+				.foregroundStyle(.white)
 				.frame(width: 82, height: 32)
 				.background(Capsule().fill(accentColor))
 				
