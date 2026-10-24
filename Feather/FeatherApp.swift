@@ -18,21 +18,14 @@ struct FeatherApp: App {
 	let heartbeat = HeartbeatManager.shared
 	
 	@StateObject var downloadManager = DownloadManager.shared
-	@StateObject private var storeCache = AppStoreCacheManager.shared
-	@StateObject private var sourcesViewModel = SourcesViewModel.shared
 	let storage = Storage.shared
 	
-	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	@State private var _showSplash = true
-	
-	private var activeTintColor: Color {
-		Color(hex: userTintHex)
-	}
 	
 	var body: some Scene {
 		WindowGroup {
 			ZStack {
-				VStack(spacing: 0) {
+				VStack {
 					DownloadHeaderView(downloadManager: downloadManager)
 						.transition(.move(edge: .top).combined(with: .opacity))
 					VariedTabbarView()
@@ -40,26 +33,17 @@ struct FeatherApp: App {
 						.onOpenURL(perform: _handleURL)
 						.transition(.move(edge: .top).combined(with: .opacity))
 				}
-				.tint(activeTintColor)
-				.accentColor(activeTintColor)
 				.animation(.smooth, value: downloadManager.manualDownloads.description)
 				
 				if _showSplash {
-					XSignLaunchSplashView(
-						cache: storeCache,
-						sourcesViewModel: sourcesViewModel
-					) {
-						withAnimation(.easeInOut(duration: 0.5)) {
+					XSignLaunchSplashView {
+						withAnimation(.easeInOut(duration: 0.6)) {
 							_showSplash = false
 						}
 					}
 					.transition(.opacity)
 					.zIndex(999)
 				}
-			}
-			.preferredColorScheme(.dark)
-			.onChange(of: userTintHex) { newHex in
-				UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: newHex))
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .heartbeatInvalidHost)) { _ in
 				DispatchQueue.main.async {
@@ -70,13 +54,11 @@ struct FeatherApp: App {
 				}
 			}
 			.onAppear {
-				if UserDefaults.standard.string(forKey: "Feather.userTintColor") == nil {
-					UserDefaults.standard.set("#005BBB", forKey: "Feather.userTintColor")
-				}
 				if let style = UIUserInterfaceStyle(rawValue: UserDefaults.standard.integer(forKey: "Feather.userInterfaceStyle")) {
 					UIApplication.topViewController()?.view.window?.overrideUserInterfaceStyle = style
 				}
-				UIApplication.topViewController()?.view.window?.tintColor = UIColor(activeTintColor)
+				
+				UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: UserDefaults.standard.string(forKey: "Feather.userTintColor") ?? "#848ef9"))
 			}
 		}
 	}
@@ -162,82 +144,39 @@ struct FeatherApp: App {
 			}
 		} else {
 			if url.pathExtension == "ipa" || url.pathExtension == "tipa" {
-				Task.detached(priority: .userInitiated) {
-					autoreleasepool {
-						if FileManager.default.isFileFromFileProvider(at: url) {
-							guard url.startAccessingSecurityScopedResource() else { return }
-							defer { url.stopAccessingSecurityScopedResource() }
-							FR.handlePackageFile(url) { _ in }
-						} else {
-							FR.handlePackageFile(url) { _ in }
-						}
-					}
+				if FileManager.default.isFileFromFileProvider(at: url) {
+					guard url.startAccessingSecurityScopedResource() else { return }
+					FR.handlePackageFile(url) { _ in }
+				} else {
+					FR.handlePackageFile(url) { _ in }
 				}
+				
 				return
 			}
 		}
 	}
 }
 
-// MARK: - Exact Geometric Double-Slash Hollow "X" Shape
-struct ExactGeometricXShape: Shape {
+// MARK: - Slow-Drawing "X" Splash Screen while Apps Load in Background
+struct XLetterShape: Shape {
 	func path(in rect: CGRect) -> Path {
-		let w = rect.width
-		let h = rect.height
-		
-		func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-			CGPoint(x: x * w, y: y * h)
-		}
-		
 		var path = Path()
-		
-		// الشفرة اليسرى والعلوية
-		path.move(to: pt(0.645, 0.040))
-		path.addLine(to: pt(0.455, 0.355))
-		path.addLine(to: pt(0.395, 0.235))
-		path.addLine(to: pt(0.285, 0.235))
-		path.addLine(to: pt(0.422, 0.482))
-		path.addLine(to: pt(0.165, 0.945))
-		path.addLine(to: pt(0.388, 0.482))
-		path.addLine(to: pt(0.228, 0.195))
-		path.addLine(to: pt(0.418, 0.195))
-		path.addLine(to: pt(0.458, 0.282))
-		path.closeSubpath()
-		
-		// الشفرة اليمنى والسفلية
-		path.move(to: pt(0.765, 0.048))
-		path.addLine(to: pt(0.578, 0.495))
-		path.addLine(to: pt(0.715, 0.755))
-		path.addLine(to: pt(0.525, 0.755))
-		path.addLine(to: pt(0.482, 0.665))
-		path.addLine(to: pt(0.315, 0.952))
-		path.addLine(to: pt(0.485, 0.592))
-		path.addLine(to: pt(0.548, 0.715))
-		path.addLine(to: pt(0.655, 0.715))
-		path.addLine(to: pt(0.538, 0.495))
-		path.closeSubpath()
-		
+		let inset: CGFloat = rect.width * 0.14
+		path.move(to: CGPoint(x: inset, y: inset))
+		path.addLine(to: CGPoint(x: rect.width - inset, y: rect.height - inset))
+		path.move(to: CGPoint(x: rect.width - inset, y: inset))
+		path.addLine(to: CGPoint(x: inset, y: rect.height - inset))
 		return path
 	}
 }
 
 struct XSignLaunchSplashView: View {
-	@ObservedObject var cache: AppStoreCacheManager
-	@ObservedObject var sourcesViewModel: SourcesViewModel
 	var onFinished: () -> Void
 	
-	@FetchRequest(
-		entity: AltSource.entity(),
-		sortDescriptors: [NSSortDescriptor(keyPath: \AltSource.name, ascending: true)]
-	) private var _sources: FetchedResults<AltSource>
-	
-	@State private var strokeProgress: CGFloat = 0.0
-	@State private var fillOpacity: Double = 0.0
-	@State private var depthAngle: Double = 12.0
-	@State private var scaleValue: CGFloat = 0.88
-	@State private var glowIntensity: Double = 0.25
-	@State private var didFinishMinimumAnimation = false
-	@State private var didDismiss = false
+	@State private var drawProgress: CGFloat = 0.0
+	@State private var glowOpacity: Double = 0.0
+	@State private var subtitleOpacity: Double = 0.0
+	@State private var scaleEffectValue: CGFloat = 0.90
 	
 	var body: some View {
 		ZStack {
@@ -246,118 +185,70 @@ struct XSignLaunchSplashView: View {
 			Circle()
 				.fill(
 					RadialGradient(
-						colors: [
-							Color.white.opacity(0.14 * glowIntensity),
-							Color(red: 0.0, green: 0.36, blue: 0.73).opacity(0.22 * glowIntensity),
-							.clear
-						],
+						colors: [Color.blue.opacity(0.28), Color.indigo.opacity(0.10), .clear],
 						center: .center,
-						startRadius: 5,
-						endRadius: 210
+						startRadius: 10,
+						endRadius: 190
 					)
 				)
-				.frame(width: 380, height: 380)
+				.frame(width: 350, height: 350)
+				.opacity(glowOpacity)
 			
-			ZStack {
-				ExactGeometricXShape()
-					.trim(from: 0, to: strokeProgress)
-					.stroke(
-						Color(red: 0.05, green: 0.25, blue: 0.55).opacity(0.65),
-						style: StrokeStyle(lineWidth: 6, lineCap: .square, lineJoin: .miter)
-					)
-					.frame(width: 220, height: 220)
-					.offset(x: 4, y: 6)
-					.blur(radius: 3)
-				
-				ExactGeometricXShape()
-					.fill(
-						LinearGradient(
-							colors: [
-								Color.white,
-								Color(white: 0.90),
-								Color.white
-							],
-							startPoint: .topLeading,
-							endPoint: .bottomTrailing
+			VStack(spacing: 28) {
+				ZStack {
+					XLetterShape()
+						.stroke(
+							Color.white.opacity(0.08),
+							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
 						)
-					)
-					.frame(width: 220, height: 220)
-					.opacity(fillOpacity)
-					.shadow(color: Color.white.opacity(0.55 * glowIntensity), radius: 16, x: 0, y: 0)
+						.frame(width: 132, height: 132)
+					
+					XLetterShape()
+						.trim(from: 0.0, to: drawProgress)
+						.stroke(
+							LinearGradient(
+								colors: [
+									Color.white,
+									Color(red: 0.35, green: 0.68, blue: 1.0),
+									Color(red: 0.18, green: 0.42, blue: 0.98)
+								],
+								startPoint: .topLeading,
+								endPoint: .bottomTrailing
+							),
+							style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round)
+						)
+						.frame(width: 132, height: 132)
+						.shadow(color: Color.blue.opacity(0.65), radius: 16, x: 0, y: 0)
+				}
+				.scaleEffect(scaleEffectValue)
 				
-				ExactGeometricXShape()
-					.trim(from: 0, to: strokeProgress)
-					.stroke(
-						LinearGradient(
-							colors: [
-								Color.white,
-								Color(white: 0.92),
-								Color.white
-							],
-							startPoint: .topTrailing,
-							endPoint: .bottomLeading
-						),
-						style: StrokeStyle(lineWidth: 3.2, lineCap: .butt, lineJoin: .miter, miterLimit: 20)
-					)
-					.frame(width: 220, height: 220)
-					.shadow(color: Color.white.opacity(0.75 * glowIntensity), radius: 10, x: 0, y: 0)
+				VStack(spacing: 8) {
+					Text("X-SIGN")
+						.font(.system(size: 22, weight: .heavy, design: .rounded))
+						.tracking(4)
+						.foregroundStyle(.white)
+					
+					Text("جاري تحميل المتجر والتطبيقات...")
+						.font(.system(size: 13, weight: .medium))
+						.foregroundStyle(.secondary)
+				}
+				.opacity(subtitleOpacity)
 			}
-			.rotation3DEffect(
-				.degrees(depthAngle),
-				axis: (x: 0.2, y: -0.3, z: 0.0),
-				perspective: 0.4
-			)
-			.scaleEffect(scaleValue)
-		}
-		.task {
-			await cache.ensureFetched(sources: _sources, viewModel: sourcesViewModel)
-			checkIfReadyToDismiss()
-		}
-		.onChange(of: cache.allCombinedItems.count) { _ in
-			checkIfReadyToDismiss()
 		}
 		.onAppear {
-			startGeometricXAnimation()
-		}
-	}
-	
-	private func startGeometricXAnimation() {
-		withAnimation(.easeInOut(duration: 2.1)) {
-			strokeProgress = 1.0
-			scaleValue = 1.0
-			depthAngle = 0.0
-		}
-		withAnimation(.easeInOut(duration: 1.1).delay(1.25)) {
-			fillOpacity = 1.0
-			glowIntensity = 1.0
-		}
-		
-		DispatchQueue.main.asyncAfter(deadline: .now() + 2.65) {
-			didFinishMinimumAnimation = true
-			checkIfReadyToDismiss()
-			
-			withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
-				glowIntensity = 0.45
-				scaleValue = 0.97
+			// رسم بطيء لحرف X يستغرق 2.8 ثانية حتى تكتمل قراءة السورسات في الخلفية
+			withAnimation(.easeInOut(duration: 2.8)) {
+				drawProgress = 1.0
+				scaleEffectValue = 1.0
+			}
+			withAnimation(.easeIn(duration: 1.2).delay(0.3)) {
+				glowOpacity = 1.0
+				subtitleOpacity = 1.0
+			}
+			DispatchQueue.main.asyncAfter(deadline: .now() + 3.3) {
+				onFinished()
 			}
 		}
-		
-		DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) {
-			dismissSplash()
-		}
-	}
-	
-	private func checkIfReadyToDismiss() {
-		guard didFinishMinimumAnimation else { return }
-		if !cache.ipablackItems.isEmpty || !cache.allCombinedItems.isEmpty {
-			dismissSplash()
-		}
-	}
-	
-	private func dismissSplash() {
-		guard !didDismiss else { return }
-		didDismiss = true
-		onFinished()
 	}
 }
 
@@ -366,7 +257,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		_ application: UIApplication,
 		didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
 	) -> Bool {
-		_createLowMemoryPipeline()
+		_createPipeline()
 		_createDocumentsDirectories()
 		ResetView.clearWorkCache()
 		_addDefaultCertificates()
@@ -374,34 +265,24 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		return true
 	}
 	
-	func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
-		ImagePipeline.shared.cache.removeAll()
-		URLCache.shared.removeAllCachedResponses()
-	}
-	
-	private func _createLowMemoryPipeline() {
+	private func _createPipeline() {
 		DataLoader.sharedUrlCache.diskCapacity = 0
-		DataLoader.sharedUrlCache.memoryCapacity = 0
 		
 		let pipeline = ImagePipeline {
 			let dataLoader: DataLoader = {
 				let config = URLSessionConfiguration.default
 				config.urlCache = nil
-				config.requestCachePolicy = .returnCacheDataElseLoad
-				config.httpMaximumConnectionsPerHost = 8
 				return DataLoader(configuration: config)
 			}()
 			let dataCache = try? DataCache(name: "thewonderofyou.Feather.datacache")
 			let imageCache = Nuke.ImageCache()
-			dataCache?.sizeLimit = 350 * 1024 * 1024
-			imageCache.costLimit = 45 * 1024 * 1024
-			imageCache.countLimit = 120
+			dataCache?.sizeLimit = 500 * 1024 * 1024
+			imageCache.costLimit = 100 * 1024 * 1024
 			$0.dataCache = dataCache
 			$0.imageCache = imageCache
 			$0.dataLoader = dataLoader
-			$0.dataCachePolicy = .storeEncodedImages
+			$0.dataCachePolicy = .automatic
 			$0.isStoringPreviewsInMemoryCache = false
-			$0.isDecompressionEnabled = true
 		}
 		
 		ImagePipeline.shared = pipeline
@@ -428,23 +309,22 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			let request = NSFetchRequest<AltSource>(entityName: "AltSource")
 			let existingSources = (try? context.fetch(request)) ?? []
 			
-			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v4"
-			for source in existingSources {
-				let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
-				let idStr = source.identifier?.lowercased() ?? ""
-				if urlStr.contains("apptesters") || idStr.contains("apptesters") {
-					context.delete(source)
-				} else if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
-					if !urlStr.contains("/ipablack/") && !urlStr.contains("store-api") {
+			// 1. حذف أي سورسات افتراضية قديمة كانت تأتي مع Feather الأصلي
+			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v1"
+			if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
+				for source in existingSources {
+					let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
+					if !urlStr.contains("apptesters") && !urlStr.contains("ipablack") {
 						context.delete(source)
 					}
 				}
+				UserDefaults.standard.set(true, forKey: purgedOnceKey)
 			}
-			UserDefaults.standard.set(true, forKey: purgedOnceKey)
 			
+			// 2. حقن السورسين الأساسيين (AppTesters + IPABLACK) بشكل مخفي ومحمي
 			let coreRepos: [(name: String, id: String, url: String)] = [
 				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"),
-				("IPA BLACK Store", "xsign.core.storeapi", "https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json")
+				("AppTesters", "xsign.core.apptesters", "https://repo.apptesters.org/")
 			]
 			
 			let updatedExisting = (try? context.fetch(request)) ?? []
@@ -459,7 +339,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 					newSource.name = repo.name
 					newSource.identifier = repo.id
 					newSource.sourceURL = repoURL
-					newSource.date = Date()
 				}
 			}
 			
