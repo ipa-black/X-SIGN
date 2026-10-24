@@ -13,65 +13,89 @@ import AltSourceKit
 import IDeviceSwift
 
 enum FR {
-	static func handlePackageFile(
-		_ ipa: URL,
-		download: Download? = nil,
-		sourceProvenance: SourceAppProvenance? = nil,
-		completion: @escaping (Error?) -> Void
-	) {
-		Task.detached {
-			let handler = AppFileHandler(
-				file: ipa,
-				download: download,
-				sourceProvenance: sourceProvenance
-			)
-			
-			do {
-				try await handler.copy()
-				try await handler.extract()
-				try await handler.move()
-				try await handler.addToDatabase()
-				try? await handler.clean()
-				await MainActor.run {
-					completion(nil)
-				}
-			} catch {
-				try? await handler.clean()
-				await MainActor.run {
-					completion(error)
-				}
-			}
-		}
-	}
-	
-	static func signPackageFile(
-		_ app: AppInfoPresentable,
-		using options: Options,
-		icon: UIImage?,
-		certificate: CertificatePair?,
-		completion: @escaping (Error?) -> Void
-	) {
-		Task.detached {
-			let handler = SigningHandler(app: app, options: options)
-			handler.appCertificate = certificate
-			handler.appIcon = icon
-			
-			do {
-				try await handler.copy()
-				try await handler.modify()
-				try? await handler.clean()
-				await MainActor.run {
-					completion(nil)
-				}
-			} catch {
-				try? await handler.clean()
-				await MainActor.run {
-					completion(error)
-				}
-			}
-		}
-	}
-	
+    static func handlePackageFile(
+        _ ipa: URL,
+        download: Download? = nil,
+        sourceProvenance: SourceAppProvenance? = nil,
+        completion: @escaping (Error?) -> Void
+    ) {
+        importPackageFile(ipa, download: download, sourceProvenance: sourceProvenance) { result in
+            switch result {
+            case .success: completion(nil)
+            case .failure(let error): completion(error)
+            }
+        }
+    }
+
+    static func importPackageFile(
+        _ ipa: URL,
+        download: Download? = nil,
+        sourceProvenance: SourceAppProvenance? = nil,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        Task.detached(priority: .userInitiated) {
+            await XSignPackageWorkGate.shared.acquire()
+            let handler = AppFileHandler(file: ipa, download: download, sourceProvenance: sourceProvenance)
+            let result: Result<String, Error>
+            do {
+                try await handler.copy()
+                try await handler.extract()
+                try await handler.move()
+                try await handler.addToDatabase()
+                result = .success(handler.importedUUID)
+            } catch {
+                result = .failure(error)
+            }
+            try? await handler.clean()
+            await XSignPackageWorkGate.shared.release()
+            await MainActor.run { completion(result) }
+        }
+    }
+
+    static func signPackageFile(
+        _ app: AppInfoPresentable,
+        using options: Options,
+        icon: UIImage?,
+        certificate: CertificatePair?,
+        completion: @escaping (Error?) -> Void
+    ) {
+        signPackageFileWithResult(app, using: options, icon: icon, certificate: certificate) { result in
+            switch result {
+            case .success: completion(nil)
+            case .failure(let error): completion(error)
+            }
+        }
+    }
+
+    static func signPackageFileWithResult(
+        _ app: AppInfoPresentable,
+        using options: Options,
+        icon: UIImage?,
+        certificate: CertificatePair?,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        Task.detached(priority: .userInitiated) {
+            await XSignPackageWorkGate.shared.acquire()
+            let handler = await MainActor.run {
+                let handler = SigningHandler(app: app, options: options)
+                handler.appCertificate = certificate
+                handler.appIcon = icon
+                return handler
+            }
+            let result: Result<String, Error>
+            do {
+                try await handler.copy()
+                try await handler.modify()
+                result = .success(handler.signedUUID)
+            } catch {
+                result = .failure(error)
+            }
+            try? await handler.clean()
+            await XSignPackageWorkGate.shared.release()
+            await MainActor.run { completion(result) }
+        }
+    }
+
 	static func handleCertificateFiles(
 		p12URL: URL,
 		provisionURL: URL,

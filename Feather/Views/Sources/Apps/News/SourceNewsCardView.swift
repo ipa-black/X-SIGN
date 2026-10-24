@@ -22,7 +22,7 @@ struct SourceNewsCardView: View {
 			}()
 			
 			if let iconURL = new.imageURL {
-				LazyImage(url: iconURL) { state in
+				LazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 1024)) { state in
 					if let image = state.image {
 						image
 							.resizable()

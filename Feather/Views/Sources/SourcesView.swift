@@ -99,6 +99,10 @@ enum AppStoreBilingualEngine {
 		["ai", "chatgpt", "gemini", "claude", "ذكاء اصطناعي", "شات جي بي تي", "جيميناي"]
 	]
 	
+    private static let normalizedSynonymGroups = synonymGroups.map { group in
+        group.map { normalize($0) }
+    }
+
 	static func normalize(_ text: String) -> String {
 		text.lowercased()
 			.replacingOccurrences(of: "أ", with: "ا")
@@ -112,10 +116,9 @@ enum AppStoreBilingualEngine {
 	static func buildSearchTokens(for app: ASRepository.App, category: AppStore2026Category) -> String {
 		let base = normalize("\(app.name ?? "") \(app.id ?? "") \(app.subtitle ?? "") \(app.localizedDescription ?? "") \(category.rawValue)")
 		var expanded = base
-		for group in synonymGroups {
-			let normalizedGroup = group.map { normalize($0) }
-			if normalizedGroup.contains(where: { base.contains($0) }) {
-				expanded += " " + normalizedGroup.joined(separator: " ")
+		for group in normalizedSynonymGroups {
+            if group.contains(where: { base.contains($0) }) {
+                expanded += " " + group.joined(separator: " ")
 			}
 		}
 		return expanded
@@ -187,7 +190,7 @@ enum AppStoreBilingualEngine {
 	}
 }
 
-struct AppStoreAppItem: Identifiable, Hashable {
+final class AppStoreAppItem: Identifiable, Hashable, Sendable {
 	let id: String
 	let sourceURL: URL?
 	let repository: ASRepository
@@ -219,15 +222,14 @@ struct AppStoreAppItem: Identifiable, Hashable {
 		}
 	}
 	
-	func matchesSearch(_ query: String) -> Bool {
-		let normalizedQuery = AppStoreBilingualEngine.normalize(query)
-		guard !normalizedQuery.isEmpty else { return true }
-		let words = normalizedQuery.split(separator: " ")
-		return words.allSatisfy { word in
-			searchIndexTokens.contains(word)
-		}
-	}
-	
+    func matchesSearch(_ query: String) -> Bool {
+        matchesSearchWords(AppStoreBilingualEngine.normalize(query).split(whereSeparator: { $0.isWhitespace }).map(String.init))
+    }
+
+    func matchesSearchWords(_ words: [String]) -> Bool {
+        words.allSatisfy { searchIndexTokens.contains($0) }
+    }
+
 	static func == (lhs: AppStoreAppItem, rhs: AppStoreAppItem) -> Bool {
 		lhs.id == rhs.id
 	}
@@ -248,7 +250,7 @@ struct TodayEditorialInstruction: Identifiable {
 	let associatedApp: AppStoreAppItem?
 }
 
-enum AppStore2026Category: String, CaseIterable, Identifiable {
+enum AppStore2026Category: String, CaseIterable, Identifiable, Sendable {
 	case topApps = "التطبيقات الأكثر تنزيلاً"
 	case topGames = "الألعاب الأكثر تنزيلاً"
 	case bestSellingApps = "التطبيقات الأكثر مبيعاً"
@@ -401,270 +403,7 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 	}
 }
 
-// MARK: - Store Cache Manager (Separates IPA BLACK Exclusively for Today View)
-@MainActor
-final class AppStoreCacheManager: ObservableObject {
-	static let shared = AppStoreCacheManager()
-	
-	@Published private(set) var ipablackItems: [AppStoreAppItem] = []
-	@Published private(set) var ipablackEditorialNews: [TodayEditorialInstruction] = []
-	
-	@Published private(set) var allCombinedItems: [AppStoreAppItem] = []
-	@Published private(set) var pureAppsOnly: [AppStoreAppItem] = []
-	@Published private(set) var pureGamesOnly: [AppStoreAppItem] = []
-	@Published private(set) var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] = [:]
-	
-	private var lastSourceSignature: String = ""
-	private var isFetching = false
-	private var isBuildingCache = false
-	
-	func ensureFetched(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
-		if !isFetching && viewModel.sources.isEmpty {
-			isFetching = true
-			await viewModel.fetchSources(sources)
-			isFetching = false
-		}
-		rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
-	}
-	
-	func forceRefresh(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
-		guard !isFetching else { return }
-		isFetching = true
-		await viewModel.fetchSources(sources, refresh: true)
-		isFetching = false
-		lastSourceSignature = ""
-		rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
-	}
-	
-	func rebuildCacheIfNeeded(sources: FetchedResults<AltSource>, repositoriesMap: [AltSource: ASRepository]) {
-		guard !isBuildingCache else { return }
-		let totalCount = repositoriesMap.values.reduce(0) { $0 + $1.apps.count }
-		let signature = "\(sources.count)_\(totalCount)"
-		guard signature != lastSourceSignature, totalCount > 0 else { return }
-		
-		lastSourceSignature = signature
-		isBuildingCache = true
-		
-		let snapshot: [(URL?, String?, ASRepository)] = sources.compactMap { source in
-			guard let repo = repositoriesMap[source] else { return nil }
-			return (source.sourceURL, source.identifier, repo)
-		}
-		
-		Task.detached(priority: .userInitiated) {
-			var allItems: [AppStoreAppItem] = []
-			var ipaBlackOnly: [AppStoreAppItem] = []
-			var ipaBlackNews: [TodayEditorialInstruction] = []
-			
-			allItems.reserveCapacity(totalCount)
-			var seenKeys = Set<String>()
-			
-			for (sourceURL, sourceID, repo) in snapshot {
-				let isIPABlack = ProtectedSourcesVault.isIPABlackSource(sourceURL, identifier: sourceID)
-				let sourceURLString = sourceURL?.absoluteString ?? ""
-				
-				var currentRepoItems: [AppStoreAppItem] = []
-				for app in repo.apps {
-					let uniqueKey = "\(app.id ?? app.currentName)_\(sourceURLString)"
-					let item = AppStoreAppItem(
-						id: uniqueKey,
-						sourceURL: sourceURL,
-						repository: repo,
-						app: app
-					)
-					if isIPABlack {
-						currentRepoItems.append(item)
-					}
-					if seenKeys.insert(uniqueKey).inserted {
-						allItems.append(item)
-					}
-				}
-				
-				if isIPABlack {
-					ipaBlackOnly.append(contentsOf: currentRepoItems)
-					
-					if let newsList = repo.news {
-						for newsItem in newsList {
-							let matchedApp = currentRepoItems.first {
-								$0.app.id == newsItem.appID
-							} ?? currentRepoItems.first
-							
-							ipaBlackNews.append(
-								TodayEditorialInstruction(
-									id: newsItem.id,
-									badge: "يحدث الآن",
-									title: newsItem.title,
-									caption: newsItem.caption,
-									imageURL: newsItem.imageURL,
-									tintColor: newsItem.tintColor ?? AppStoreTheme.oceanBlue,
-									associatedApp: matchedApp
-								)
-							)
-						}
-					}
-				}
-			}
-			
-			let onlyApps = allItems.filter { !$0.isGame }
-			let onlyGames = allItems.filter { $0.isGame }
-			
-			var categoryDict: [AppStore2026Category: [AppStoreAppItem]] = [:]
-			for category in AppStore2026Category.allCases {
-				switch category {
-				case .topApps:
-					categoryDict[category] = onlyApps
-				case .bestSellingApps:
-					categoryDict[category] = Array(onlyApps.reversed())
-				case .topGames:
-					categoryDict[category] = onlyGames
-				case .bestSellingGames:
-					categoryDict[category] = Array(onlyGames.reversed())
-				case .timePass:
-					let casual = onlyGames.filter { $0.category == .casualGames || $0.category == .puzzleGames }
-					categoryDict[category] = casual.isEmpty ? onlyGames : casual
-				default:
-					let exactMatches = allItems.filter { $0.category == category }
-					if !exactMatches.isEmpty {
-						categoryDict[category] = exactMatches
-					} else {
-						categoryDict[category] = category.isGameCategory ? onlyGames : onlyApps
-					}
-				}
-			}
-			
-			let finalIPABlack = ipaBlackOnly.isEmpty ? allItems : ipaBlackOnly
-			let finalIPABlackNews = ipaBlackNews
-			let finalAll = allItems
-			let finalApps = onlyApps
-			let finalGames = onlyGames
-			let finalCats = categoryDict
-			
-			await MainActor.run {
-				let manager = AppStoreCacheManager.shared
-				manager.ipablackItems = finalIPABlack
-				manager.ipablackEditorialNews = finalIPABlackNews
-				manager.allCombinedItems = finalAll
-				manager.pureAppsOnly = finalApps
-				manager.pureGamesOnly = finalGames
-				manager.itemsByCategory = finalCats
-				manager.isBuildingCache = false
-			}
-		}
-	}
-}
-
-// MARK: - 1-Click Download -> Auto-Sign -> Auto-Install Engine
-@MainActor
-final class AutoSignPipelineManager: ObservableObject {
-	static let shared = AutoSignPipelineManager()
-	
-	@Published var activeStates: [String: Stage] = [:]
-	@Published var readyToInstallApp: AnyApp? = nil
-	
-	enum Stage: Equatable {
-		case downloading
-		case signing
-		case ready
-	}
-	
-	private var watchTasks: [String: Task<Void, Never>] = [:]
-	
-	func downloadAndAutoSign(app: ASRepository.App) {
-		guard let url = app.currentDownloadUrl else { return }
-		let appKey = app.id ?? app.currentName
-		
-		guard activeStates[appKey] == nil else { return }
-		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-		activeStates[appKey] = .downloading
-		
-		let existingUUIDs = Set(Self.fetchImportedApps().compactMap { $0.uuid })
-		let downloadID = "AutoSign_\(UUID().uuidString)"
-		_ = DownloadManager.shared.startDownload(from: url, id: downloadID)
-		
-		watchTasks[appKey]?.cancel()
-		watchTasks[appKey] = Task {
-			for _ in 0..<360 {
-				if Task.isCancelled { return }
-				try? await Task.sleep(nanoseconds: 500_000_000)
-				
-				let currentImported = Self.fetchImportedApps()
-				if let newlyImported = currentImported.first(where: { item in
-					guard let uuid = item.uuid else { return false }
-					return !existingUUIDs.contains(uuid)
-				}) {
-					await triggerInstantSign(for: newlyImported, appKey: appKey)
-					return
-				}
-			}
-			activeStates[appKey] = nil
-		}
-	}
-	
-	private func triggerInstantSign(for importedApp: Imported, appKey: String) async {
-		guard let cert = Self.fetchActiveCertificate() else {
-			activeStates[appKey] = nil
-			UIAlertController.showAlertWithOk(
-				title: "تم التنزيل",
-				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من الإعدادات في الأعلى لتوقيعه تلقائياً."
-			)
-			return
-		}
-		
-		activeStates[appKey] = .signing
-		let options = OptionsManager.shared.options
-		
-		FR.signPackageFile(
-			importedApp,
-			using: options,
-			icon: nil,
-			certificate: cert
-		) { [weak self] error in
-			DispatchQueue.main.async {
-				guard let self else { return }
-				if let error {
-					self.activeStates[appKey] = nil
-					UINotificationFeedbackGenerator().notificationOccurred(.error)
-					UIAlertController.showAlertWithOk(
-						title: "فشل التوقيع التلقائي",
-						message: error.localizedDescription
-					)
-				} else {
-					self.activeStates[appKey] = .ready
-					UINotificationFeedbackGenerator().notificationOccurred(.success)
-					
-					if let latestSigned = Self.fetchSignedApps().first {
-						self.readyToInstallApp = AnyApp(base: latestSigned)
-					}
-					
-					DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
-						self.activeStates[appKey] = nil
-					}
-				}
-			}
-		}
-	}
-	
-	private static func fetchImportedApps() -> [Imported] {
-		let request = NSFetchRequest<Imported>(entityName: "Imported")
-		request.sortDescriptors = [NSSortDescriptor(keyPath: \Imported.date, ascending: false)]
-		return (try? Storage.shared.context.fetch(request)) ?? []
-	}
-	
-	private static func fetchSignedApps() -> [Signed] {
-		let request = NSFetchRequest<Signed>(entityName: "Signed")
-		request.sortDescriptors = [NSSortDescriptor(keyPath: \Signed.date, ascending: false)]
-		return (try? Storage.shared.context.fetch(request)) ?? []
-	}
-	
-	private static func fetchActiveCertificate() -> CertificatePair? {
-		let request = NSFetchRequest<CertificatePair>(entityName: "CertificatePair")
-		request.sortDescriptors = [NSSortDescriptor(keyPath: \CertificatePair.date, ascending: false)]
-		guard let certs = try? Storage.shared.context.fetch(request), !certs.isEmpty else {
-			return nil
-		}
-		let index = UserDefaults.standard.integer(forKey: "feather.selectedCert")
-		return certs.indices.contains(index) ? certs[index] : certs.first
-	}
-}
+// Cache and signing coordinators live in AppStoreCacheManager.swift and AutoSignPipelineManager.swift.
 
 enum AppStoreAppIconProvider {
 	static let cachedIcon: UIImage? = {
@@ -904,7 +643,7 @@ struct AppStoreTodayView: View {
 							.padding(.horizontal, 18)
 						}
 						
-						let worldGridApps = Array(todayApps.shuffled().prefix(8))
+						let worldGridApps = Array(todayApps.dropFirst(8).prefix(8))
 						if !worldGridApps.isEmpty, let worldFallback = worldGridApps.first {
 							NavigationLink {
 								AppStore2026CategoryListView(
@@ -933,7 +672,7 @@ struct AppStoreTodayView: View {
 						}
 					}
 				}
-				.padding(.bottom, 105)
+				.padding(.bottom, 16)
 			}
 			.background(Color.black.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
@@ -949,9 +688,13 @@ struct AppStoreTodayView: View {
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
-		.onChange(of: viewModel.sources.count) { _ in
+		.onChange(of: viewModel.revision) { _ in
 			cache.rebuildCacheIfNeeded(sources: _sources, repositoriesMap: viewModel.sources)
 		}
+        .onChange(of: _sources.map { $0.objectID }) { _ in
+            Task { await cache.ensureFetched(sources: _sources, viewModel: viewModel) }
+        }
+
 	}
 }
 
@@ -1113,7 +856,7 @@ struct SourcesView: View {
 						}
 					}
 				}
-				.padding(.bottom, 100)
+				.padding(.bottom, 16)
 			}
 			.background(Color.black.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
@@ -1129,9 +872,13 @@ struct SourcesView: View {
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
-		.onChange(of: viewModel.sources.count) { _ in
+		.onChange(of: viewModel.revision) { _ in
 			cache.rebuildCacheIfNeeded(sources: _sources, repositoriesMap: viewModel.sources)
 		}
+        .onChange(of: _sources.map { $0.objectID }) { _ in
+            Task { await cache.ensureFetched(sources: _sources, viewModel: viewModel) }
+        }
+
 	}
 }
 
@@ -1294,7 +1041,7 @@ struct AppStoreGamesView: View {
 						}
 					}
 				}
-				.padding(.bottom, 100)
+				.padding(.bottom, 16)
 			}
 			.background(Color.black.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
@@ -1310,9 +1057,13 @@ struct AppStoreGamesView: View {
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
-		.onChange(of: viewModel.sources.count) { _ in
+		.onChange(of: viewModel.revision) { _ in
 			cache.rebuildCacheIfNeeded(sources: _sources, repositoriesMap: viewModel.sources)
 		}
+        .onChange(of: _sources.map { $0.objectID }) { _ in
+            Task { await cache.ensureFetched(sources: _sources, viewModel: viewModel) }
+        }
+
 	}
 }
 
@@ -1321,6 +1072,8 @@ struct AppStoreSearchView: View {
 	@StateObject private var viewModel = SourcesViewModel.shared
 	@StateObject private var cache = AppStoreCacheManager.shared
 	@State private var searchText = ""
+    @State private var searchResults: [AppStoreAppItem] = []
+    @FocusState private var searchFieldFocused: Bool
 	@State private var showSettingsSheet = false
 	
 	@FetchRequest(
@@ -1332,12 +1085,6 @@ struct AppStoreSearchView: View {
 		Array(cache.allCombinedItems.prefix(3))
 	}
 	
-	private var searchResults: [AppStoreAppItem] {
-		let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-		guard !q.isEmpty else { return [] }
-		return cache.allCombinedItems.filter { $0.matchesSearch(q) }
-	}
-	
 	var body: some View {
 		NavigationStack {
 			ScrollView(.vertical, showsIndicators: false) {
@@ -1347,6 +1094,24 @@ struct AppStoreSearchView: View {
 						onSettingsTap: { showSettingsSheet = true }
 					)
 					
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("الألعاب والتطبيقات والمزيد...", text: $searchText)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($searchFieldFocused)
+                            .submitLabel(.search)
+                        if !searchText.isEmpty {
+                            Button { searchText = "" } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .accessibilityLabel("مسح البحث")
+                        }
+                    }
+                    .padding(13)
+                    .background(Color(white: 0.14), in: RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 18)
+
 					if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
 						if !suggestedApps.isEmpty {
 							VStack(alignment: .leading, spacing: 14) {
@@ -1463,15 +1228,11 @@ struct AppStoreSearchView: View {
 						.padding(.horizontal, 18)
 					}
 				}
-				.padding(.bottom, 110)
+				.padding(.bottom, 16)
 			}
 			.background(Color.black.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
-			.searchable(
-				text: $searchText,
-				placement: .automatic,
-				prompt: "الألعاب والتطبيقات والمزيد..."
-			)
+            .scrollDismissesKeyboard(.interactively)
 			.sheet(isPresented: $showSettingsSheet) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
 			}
@@ -1481,17 +1242,48 @@ struct AppStoreSearchView: View {
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
-		.onChange(of: viewModel.sources.count) { _ in
+        .task(id: XSignSearchIdentity(query: searchText, revision: cache.revision)) {
+            let words = AppStoreBilingualEngine.normalize(searchText)
+                .split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard !words.isEmpty else { searchResults = []; return }
+            do { try await Task.sleep(nanoseconds: 200_000_000) }
+            catch { return }
+            let items = cache.allCombinedItems
+            let worker = Task.detached(priority: .userInitiated) { () -> [AppStoreAppItem] in
+                var matches: [AppStoreAppItem] = []
+                for item in items {
+                    guard !Task.isCancelled else { return [] }
+                    if item.matchesSearchWords(words) { matches.append(item) }
+                }
+                return matches
+            }
+            let matches = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled else { return }
+            searchResults = matches
+        }
+		.onChange(of: viewModel.revision) { _ in
 			cache.rebuildCacheIfNeeded(sources: _sources, repositoriesMap: viewModel.sources)
 		}
+        .onChange(of: _sources.map { $0.objectID }) { _ in
+            Task { await cache.ensureFetched(sources: _sources, viewModel: viewModel) }
+        }
+
 	}
+}
+
+private struct XSignSearchIdentity: Hashable {
+    let query: String
+    let revision: UInt64
 }
 
 // MARK: - Top Header (Only Account Avatar Remains)
 struct AppStore2026TopHeader: View {
 	let title: String
 	let onSettingsTap: () -> Void
-	@ObservedObject private var autoSign = AutoSignPipelineManager.shared
 	
 	var body: some View {
 		HStack(alignment: .center) {
@@ -1505,11 +1297,7 @@ struct AppStore2026TopHeader: View {
 		}
 		.padding(.horizontal, 18)
 		.padding(.top, 10)
-		.sheet(item: $autoSign.readyToInstallApp) { signedApp in
-			InstallPreviewView(app: signedApp.base, isSharing: signedApp.archive)
-				.presentationDetents([.height(200)])
-				.presentationDragIndicator(.visible)
-		}
+
 	}
 }
 
@@ -1591,7 +1379,7 @@ struct TodayLiveEventHeroCard: View {
 						)
 						
 						if let bannerURL = bannerImageURL {
-							LazyImage(url: bannerURL) { state in
+							LazyImage(request: XSignImageRequest.thumbnail(bannerURL, maximumPixelSize: 1200)) { state in
 								if let image = state.image {
 									image
 										.resizable()
@@ -1673,7 +1461,7 @@ struct TodayLiveEventHeroCard: View {
 					
 					Spacer()
 					
-					AppStore2026DownloadButton(app: item.app, isLightPill: true)
+					AppStore2026DownloadButton(app: item.app, isLightPill: true, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
 				}
 				.padding(.horizontal, 18)
 				.padding(.vertical, 14)
@@ -1892,7 +1680,7 @@ struct TodayFullArtworkDockCard: View {
 				)
 				
 				if let firstScreen = item.screenshots.first {
-					LazyImage(url: firstScreen) { state in
+					LazyImage(request: XSignImageRequest.thumbnail(firstScreen, maximumPixelSize: 1200)) { state in
 						if let image = state.image {
 							image
 								.resizable()
@@ -1963,7 +1751,7 @@ struct TodayFullArtworkDockCard: View {
 				
 				Spacer()
 				
-				AppStore2026DownloadButton(app: item.app, isLightPill: true)
+				AppStore2026DownloadButton(app: item.app, isLightPill: true, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
 			}
 			.padding(.horizontal, 18)
 			.padding(.vertical, 14)
@@ -2034,7 +1822,7 @@ struct TodayEditorialTipsCard: View {
 				
 				Spacer()
 				
-				AppStore2026DownloadButton(app: item.app, isLightPill: true)
+				AppStore2026DownloadButton(app: item.app, isLightPill: true, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
 			}
 			.padding(.horizontal, 18)
 			.padding(.vertical, 14)
@@ -2223,6 +2011,7 @@ struct AppStore2026DownloadButton: View {
 	let app: ASRepository.App
 	var useCloudStyle: Bool = false
 	var isLightPill: Bool = false
+    var sourceProvenance: SourceAppProvenance? = nil
 	@ObservedObject private var pipeline = AutoSignPipelineManager.shared
 	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
@@ -2230,9 +2019,9 @@ struct AppStore2026DownloadButton: View {
 		Color(hex: userTintHex)
 	}
 	
-	private var appKey: String {
-		app.id ?? app.currentName
-	}
+    private var appKey: String {
+        AutoSignPipelineManager.key(for: app)
+    }
 	
 	private var currentStage: AutoSignPipelineManager.Stage? {
 		pipeline.activeStates[appKey]
@@ -2240,7 +2029,7 @@ struct AppStore2026DownloadButton: View {
 	
 	var body: some View {
 		Button {
-			pipeline.downloadAndAutoSign(app: app)
+			pipeline.downloadAndAutoSign(app: app, sourceProvenance: sourceProvenance)
 		} label: {
 			switch currentStage {
 			case .downloading:
@@ -2321,7 +2110,7 @@ struct AppStore2026AppRow: View {
 			
 			Spacer(minLength: 8)
 			
-			AppStore2026DownloadButton(app: item.app)
+			AppStore2026DownloadButton(app: item.app, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
 		}
 	}
 }
@@ -2353,7 +2142,7 @@ struct AppStore2026SuggestedHighlightRow: View {
 			
 			Spacer()
 			
-			AppStore2026DownloadButton(app: item.app)
+			AppStore2026DownloadButton(app: item.app, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
 		}
 		.padding(12)
 		.background(
@@ -2505,7 +2294,7 @@ struct AppStore2026FeaturedBanner: View {
 					
 					Spacer()
 					
-					AppStore2026DownloadButton(app: item.app, isLightPill: true)
+					AppStore2026DownloadButton(app: item.app, isLightPill: true, sourceProvenance: SourceAppProvenance(sourceURL: item.sourceURL, repository: item.repository, app: item.app))
 				}
 				.padding(14)
 				.background(Color.black.opacity(0.55))
@@ -2526,9 +2315,9 @@ struct AppStore2026SearchResultCard: View {
 			
 			if !item.screenshots.isEmpty {
 				ScrollView(.horizontal, showsIndicators: false) {
-					HStack(spacing: 10) {
+					LazyHStack(spacing: 10) {
 						ForEach(Array(item.screenshots.prefix(3)), id: \.self) { url in
-							LazyImage(url: url) { state in
+							LazyImage(request: XSignImageRequest.thumbnail(url, maximumPixelSize: 760)) { state in
 								if let image = state.image {
 									image
 										.resizable()
@@ -2594,7 +2383,7 @@ struct AppStoreIconView: View {
 	var body: some View {
 		Group {
 			if let url {
-				LazyImage(url: url) { state in
+				LazyImage(request: XSignImageRequest.thumbnail(url, maximumPixelSize: Float(size * 2))) { state in
 					if let image = state.image {
 						image
 							.resizable()

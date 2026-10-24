@@ -14,7 +14,10 @@ enum FRIconAppearance: Int {
 
 final class FRIconCache {
 	static let shared = FRIconCache()
-	private init() {}
+	private init() {
+        cache.countLimit = 100
+        cache.totalCostLimit = 12 * 1024 * 1024
+    }
 
 	private let cache = NSCache<NSString, UIImage>()
 
@@ -27,7 +30,12 @@ final class FRIconCache {
 	}
 
 	func insert(_ image: UIImage, for url: URL, appearance: FRIconAppearance, tint: String, isTinted: Bool, dynamic: Bool) {
-		cache.setObject(image, forKey: key(url: url, appearance: appearance, tint: tint, isTinted: isTinted, dynamic: dynamic))
+		let bytes = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 256 * 256 * 4
+        cache.setObject(
+            image,
+            forKey: key(url: url, appearance: appearance, tint: tint, isTinted: isTinted, dynamic: dynamic),
+            cost: bytes
+        )
 	}
 
 	func invalidateAll() {

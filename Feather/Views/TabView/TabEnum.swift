@@ -22,7 +22,7 @@ enum TabEnum: String, CaseIterable, Hashable {
 		case .today:        return "اليوم"
 		case .games:        return "الألعاب"
 		case .sources:     	return "التطبيقات"
-		case .library: 		return "التوقيع"
+		case .library: 		return "Arcade"
 		case .search:       return "بحث"
 		case .settings: 	return "الإعدادات"
 		case .certificates:	return "الشهادات"

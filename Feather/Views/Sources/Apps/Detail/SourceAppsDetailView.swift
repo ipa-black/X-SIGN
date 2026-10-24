@@ -36,7 +36,7 @@ struct SourceAppsDetailView: View {
 			VStack(alignment: .leading, spacing: 10) {
 				HStack(spacing: 10) {
 					if let iconURL = app.iconURL {
-						LazyImage(url: iconURL) { state in
+						LazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 1000)) { state in
 							if let image = state.image {
 								image.appIconStyle(size: 111, isCircle: false)
 							} else {
@@ -237,7 +237,7 @@ extension SourceAppsDetailView {
 	private func _header() -> some View {
 		ZStack {
 			if let iconURL = source.currentIconURL {
-				LazyImage(url: iconURL) { state in
+				LazyImage(request: XSignImageRequest.thumbnail(iconURL, maximumPixelSize: 1000)) { state in
 					if let image = state.image {
 						image.resizable()
 							.aspectRatio(contentMode: .fill)
@@ -306,10 +306,10 @@ extension SourceAppsDetailView {
 	@ViewBuilder
 	private func _screenshots(screenshotURLs: [URL]) -> some View {
 		ScrollView(.horizontal, showsIndicators: false) {
-			HStack(spacing: 12) {
+			LazyHStack(spacing: 12) {
 				ForEach(screenshotURLs.indices, id: \.self) { index in
 					let url = screenshotURLs[index]
-					LazyImage(url: url) { state in
+					LazyImage(request: XSignImageRequest.thumbnail(url, maximumPixelSize: 1000)) { state in
 						if let image = state.image {
 							image
 								.resizable()

@@ -60,7 +60,7 @@ extension ScreenshotPreviewView {
 	private func _imageScrollView() -> some View {
 		TabView(selection: $currentIndex) {
 			ForEach(screenshotURLs.indices, id: \.self) { index in
-				LazyImage(url: screenshotURLs[index]) { state in
+				LazyImage(request: XSignImageRequest.thumbnail(screenshotURLs[index], maximumPixelSize: 1600)) { state in
 					if let image = state.image {
 						image
 							.resizable()

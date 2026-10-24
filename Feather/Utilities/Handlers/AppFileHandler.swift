@@ -12,6 +12,7 @@ import SwiftUI
 final class AppFileHandler: NSObject, @unchecked Sendable {
 	private let _fileManager = FileManager.default
 	private let _uuid = UUID().uuidString
+    var importedUUID: String { _uuid }
 	private let _uniqueWorkDir: URL
 	var uniqueWorkDirPayload: URL?
 
@@ -43,7 +44,11 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 
 		try _fileManager.removeFileIfNeeded(at: destinationURL)
 		
-		try _fileManager.copyItem(at: _ipa, to: destinationURL)
+		if _download != nil && _ipa.pathComponents.contains("XSignDownloads") {
+            try _fileManager.moveItem(at: _ipa, to: destinationURL)
+        } else {
+            try _fileManager.copyItem(at: _ipa, to: destinationURL)
+        }
 		_ipa = destinationURL
 	}
 	
@@ -56,6 +61,7 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 		}
 		
 		let download = self._download
+        var lastProgressEmission: TimeInterval = 0
 		
 		try await withCheckedThrowingContinuation { continuation in
 			DispatchQueue.global(qos: .utility).async {
@@ -66,6 +72,9 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 						overwrite: true,
 						password: nil,
 						progress: { progress in
+                            let now = ProcessInfo.processInfo.systemUptime
+                            guard progress >= 1 || now - lastProgressEmission >= 0.1 else { return }
+                            lastProgressEmission = now
 							if let download = download {
 								DispatchQueue.main.async {
 									download.unpackageProgress = progress
@@ -105,33 +114,34 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 		try? _fileManager.removeItem(at: _uniqueWorkDir)
 	}
 	
-	func addToDatabase() async throws {
-		let app = try await _directory()
-		
-		guard let appUrl = _fileManager.getPath(in: app, for: "app") else {
-			return
-		}
-		
-		let bundle = Bundle(url: appUrl)
-		
-		Storage.shared.addImported(
-			uuid: _uuid,
-			source: _sourceProvenance?.sourceRepositoryURL,
-			appName: bundle?.name,
-			appIdentifier: bundle?.bundleIdentifier,
-			appVersion: bundle?.version,
-			appIcon: bundle?.iconFileName
-		) { _ in }
-		
-		if let sourceProvenance = _sourceProvenance {
-			Storage.shared.addSourceMetadata(
-				for: _uuid,
-				kind: .imported,
-				provenance: sourceProvenance
-			)
-		}
-	}
-	
+    func addToDatabase() async throws {
+        let directory = try await _directory()
+        guard let appURL = _fileManager.getPath(in: directory, for: "app") else {
+            throw ImportedFileHandlerError.payloadNotFound
+        }
+        let bundle = Bundle(url: appURL)
+        let name = bundle?.name
+        let identifier = bundle?.bundleIdentifier
+        let version = bundle?.version
+        let icon = bundle?.iconFileName
+        try await MainActor.run {
+            var insertionError: Error?
+            Storage.shared.addImported(
+                uuid: _uuid,
+                source: _sourceProvenance?.sourceRepositoryURL,
+                appName: name,
+                appIdentifier: identifier,
+                appVersion: version,
+                appIcon: icon
+            ) { insertionError = $0 }
+            if let insertionError { throw insertionError }
+            if let provenance = _sourceProvenance {
+                Storage.shared.addSourceMetadata(for: _uuid, kind: .imported, provenance: provenance)
+            }
+            if Storage.shared.context.hasChanges { try Storage.shared.context.save() }
+        }
+    }
+
 	private func _directory() async throws -> URL {
 		// Documents/Feather/Unsigned/\(UUID)
 		_fileManager.unsigned(_uuid)
