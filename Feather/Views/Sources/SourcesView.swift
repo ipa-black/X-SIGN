@@ -51,7 +51,7 @@ enum ProtectedSourcesVault {
 	}
 }
 
-// MARK: - Official Apple App Store Metadata Bridge (Fetches Screenshots & Icons Directly from Apple!)
+// MARK: - Official Apple App Store Metadata Bridge (Fetches Screenshots & Icons Directly from Apple)
 actor AppStoreLiveMetadataBridge {
 	static let shared = AppStoreLiveMetadataBridge()
 	
@@ -416,6 +416,8 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 	
 	nonisolated static func strictlyClassify(app: ASRepository.App) -> AppStore2026Category {
 		let nameAndBundle = "\(app.name ?? "") \(app.id ?? "") \(app.category ?? "")".lowercased()
+		let desc = (app.localizedDescription ?? app.subtitle ?? "").lowercased()
+		let combined = "\(nameAndBundle) \(desc)"
 		
 		let socialApps = ["instagram", "whatsapp", "tiktok", "snapchat", "twitter", "telegram", "facebook", "discord", "messenger", "reddit", "threads", "watusi", "bhinsta", "uplus", "rocket", "swiftgram", "nicegram", "wicked", "انستقرام", "واتس", "تيك توك", "سناب", "تليجرام", "تويتر", "فيسبوك", "ديسكورد"]
 		if socialApps.contains(where: { nameAndBundle.contains($0) }) { return .social }
@@ -2561,7 +2563,6 @@ struct AppStore2026FeaturedBanner: View {
 	}
 }
 
-// بطاقة نتائج البحث مع سكرين شوتس مسحوبة مباشرة من Apple App Store!
 struct AppStore2026SearchResultCard: View {
 	let item: AppStoreAppItem
 	@State private var liveScreenshots: [URL] = []
@@ -2639,7 +2640,6 @@ struct AppStore2026CategoryListView: View {
 	}
 }
 
-// أيقونة التطبيق الذكية: إن لم تكن متوفرة في السورس، تسحب الأيقونة الرسمية من App Store
 struct AppStoreIconView: View {
 	let url: URL?
 	var bundleID: String? = nil
