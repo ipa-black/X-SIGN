@@ -215,7 +215,6 @@ struct XSignLaunchSplashView: View {
 		ZStack {
 			Color.black.ignoresSafeArea()
 			
-			// هالة محيطية ناعمة جداً خلف المجسم ثلاثي الأبعاد
 			Circle()
 				.fill(
 					RadialGradient(
@@ -232,7 +231,6 @@ struct XSignLaunchSplashView: View {
 				.frame(width: 360, height: 360)
 			
 			ZStack {
-				// 1. طبقة العمق الخلفي 3D Extrusion
 				ZStack {
 					X3DRibbonShape(firstStroke: true)
 						.trim(from: 0, to: strokeOneProgress)
@@ -251,7 +249,6 @@ struct XSignLaunchSplashView: View {
 				.offset(x: 5, y: 7)
 				.blur(radius: 3)
 				
-				// 2. الضلع الأول من حرف X بتدرج ثلاثي الأبعاد أبيض ناصع
 				X3DRibbonShape(firstStroke: true)
 					.trim(from: 0, to: strokeOneProgress)
 					.stroke(
@@ -269,7 +266,6 @@ struct XSignLaunchSplashView: View {
 					.frame(width: 148, height: 148)
 					.shadow(color: .black.opacity(0.65), radius: 8, x: 3, y: 5)
 				
-				// 3. الضلع الثاني المتقاطع فوقه بلمعة 3D وظل واقعي عند نقطة التقاطع
 				X3DRibbonShape(firstStroke: false)
 					.trim(from: 0, to: strokeTwoProgress)
 					.stroke(
@@ -297,7 +293,6 @@ struct XSignLaunchSplashView: View {
 			.scaleEffect(scaleValue)
 		}
 		.task {
-			// بدء تحميل السورسات والتطبيقات فوراً أثناء رسم حرف X
 			await cache.ensureFetched(sources: _sources, viewModel: sourcesViewModel)
 			checkIfReadyToDismiss()
 		}
@@ -310,12 +305,10 @@ struct XSignLaunchSplashView: View {
 	}
 	
 	private func startSlow3DDrawing() {
-		// رسم الضلع الأول ببطء
 		withAnimation(.easeInOut(duration: 1.35)) {
 			strokeOneProgress = 1.0
 			scaleValue = 0.95
 		}
-		// رسم الضلع الثاني فوقه ببطء مع اعتدال زاوية الـ 3D
 		withAnimation(.easeInOut(duration: 1.45).delay(1.15)) {
 			strokeTwoProgress = 1.0
 			depthTilt = 0.0
@@ -323,7 +316,6 @@ struct XSignLaunchSplashView: View {
 			glowIntensity = 1.0
 		}
 		
-		// نبض 3D هادئ في حال استغرق الإنترنت ثواني إضافية لتحميل التطبيقات
 		DispatchQueue.main.asyncAfter(deadline: .now() + 2.65) {
 			didFinishMinimumAnimation = true
 			checkIfReadyToDismiss()
@@ -334,7 +326,6 @@ struct XSignLaunchSplashView: View {
 			}
 		}
 		
-		// حد أقصى للأمان (6.5 ثانية) حتى يفتح التطبيق لو كان الجهاز بدون إنترنت
 		DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) {
 			dismissSplash()
 		}
@@ -411,20 +402,25 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			let request = NSFetchRequest<AltSource>(entityName: "AltSource")
 			let existingSources = (try? context.fetch(request)) ?? []
 			
-			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v3"
-			if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
-				for source in existingSources {
-					let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
-					if !urlStr.contains("apptesters") && !urlStr.contains("ipablack") {
+			// إزالة AppTesters نهائياً في أي وقت يُكتشف فيه، ومسح السورسات الافتراضية القديمة
+			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v4"
+			for source in existingSources {
+				let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
+				let idStr = source.identifier?.lowercased() ?? ""
+				if urlStr.contains("apptesters") || idStr.contains("apptesters") {
+					context.delete(source)
+				} else if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
+					if !urlStr.contains("/ipablack/") && !urlStr.contains("store-api") {
 						context.delete(source)
 					}
 				}
-				UserDefaults.standard.set(true, forKey: purgedOnceKey)
 			}
+			UserDefaults.standard.set(true, forKey: purgedOnceKey)
 			
+			// حقن السورسين الأساسيين المعتمدين: IPABLACK + store-api
 			let coreRepos: [(name: String, id: String, url: String)] = [
 				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"),
-				("AppTesters", "xsign.core.apptesters", "https://repository.apptesters.org/")
+				("IPA BLACK Store", "xsign.core.storeapi", "https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json")
 			]
 			
 			let updatedExisting = (try? context.fetch(request)) ?? []
@@ -439,6 +435,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 					newSource.name = repo.name
 					newSource.identifier = repo.id
 					newSource.sourceURL = repoURL
+					newSource.date = Date()
 				}
 			}
 			
