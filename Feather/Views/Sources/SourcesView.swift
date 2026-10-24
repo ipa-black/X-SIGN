@@ -552,7 +552,7 @@ final class AppStoreCacheManager: ObservableObject {
 	}
 }
 
-// MARK: - 1-Click Download -> Auto-Sign -> Auto-Install Engine
+// MARK: - Instant CoreData-Driven Auto-Sign Engine (Zero Delay, Pre-cached Cert)
 @MainActor
 final class AutoSignPipelineManager: ObservableObject {
 	static let shared = AutoSignPipelineManager()
@@ -567,24 +567,35 @@ final class AutoSignPipelineManager: ObservableObject {
 	}
 	
 	private var watchTasks: [String: Task<Void, Never>] = [:]
+	private var cachedCertificate: CertificatePair? = nil
+	
+	init() {
+		refreshCertificateCache()
+	}
+	
+	func refreshCertificateCache() {
+		cachedCertificate = Self.fetchActiveCertificate()
+	}
 	
 	func downloadAndAutoSign(app: ASRepository.App) {
 		guard let url = app.currentDownloadUrl else { return }
 		let appKey = app.id ?? app.currentName
 		
 		guard activeStates[appKey] == nil else { return }
-		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+		UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
 		activeStates[appKey] = .downloading
 		
+		refreshCertificateCache()
 		let existingUUIDs = Set(Self.fetchImportedApps().compactMap { $0.uuid })
 		let downloadID = "AutoSign_\(UUID().uuidString)"
 		_ = DownloadManager.shared.startDownload(from: url, id: downloadID)
 		
 		watchTasks[appKey]?.cancel()
 		watchTasks[appKey] = Task {
-			for _ in 0..<360 {
+			// فحص فائق السرعة كل 0.12 ثانية لبدء التوقيع في نفس اللحظة التي يكتمل فيها التنزيل
+			for _ in 0..<1500 {
 				if Task.isCancelled { return }
-				try? await Task.sleep(nanoseconds: 500_000_000)
+				try? await Task.sleep(nanoseconds: 120_000_000)
 				
 				let currentImported = Self.fetchImportedApps()
 				if let newlyImported = currentImported.first(where: { item in
@@ -600,11 +611,11 @@ final class AutoSignPipelineManager: ObservableObject {
 	}
 	
 	private func triggerInstantSign(for importedApp: Imported, appKey: String) async {
-		guard let cert = Self.fetchActiveCertificate() else {
+		guard let cert = cachedCertificate ?? Self.fetchActiveCertificate() else {
 			activeStates[appKey] = nil
 			UIAlertController.showAlertWithOk(
 				title: "تم التنزيل",
-				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من الإعدادات في الأعلى لتوقيعه تلقائياً."
+				message: "تم تنزيل التطبيق، يرجى إضافة شهادة من أيقونة الحساب في الأعلى لتوقيعه تلقائياً."
 			)
 			return
 		}
@@ -635,7 +646,7 @@ final class AutoSignPipelineManager: ObservableObject {
 						self.readyToInstallApp = AnyApp(base: latestSigned)
 					}
 					
-					DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+					DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
 						self.activeStates[appKey] = nil
 					}
 				}
@@ -646,12 +657,14 @@ final class AutoSignPipelineManager: ObservableObject {
 	private static func fetchImportedApps() -> [Imported] {
 		let request = NSFetchRequest<Imported>(entityName: "Imported")
 		request.sortDescriptors = [NSSortDescriptor(keyPath: \Imported.date, ascending: false)]
+		request.fetchLimit = 5
 		return (try? Storage.shared.context.fetch(request)) ?? []
 	}
 	
 	private static func fetchSignedApps() -> [Signed] {
 		let request = NSFetchRequest<Signed>(entityName: "Signed")
 		request.sortDescriptors = [NSSortDescriptor(keyPath: \Signed.date, ascending: false)]
+		request.fetchLimit = 2
 		return (try? Storage.shared.context.fetch(request)) ?? []
 	}
 	
@@ -1487,7 +1500,7 @@ struct AppStoreSearchView: View {
 	}
 }
 
-// MARK: - Top Header (Only Account Avatar Remains)
+// MARK: - Top Header (Only Account Avatar Remains - No "+" Button)
 struct AppStore2026TopHeader: View {
 	let title: String
 	let onSettingsTap: () -> Void
@@ -1601,6 +1614,7 @@ struct TodayLiveEventHeroCard: View {
 										.opacity(0.55)
 								}
 							}
+							.processors([.resize(size: CGSize(width: 500, height: 500))])
 						} else {
 							AppStoreIconView(url: item.app.iconURL, size: 138)
 								.shadow(color: .black.opacity(0.45), radius: 18, x: 0, y: 10)
@@ -1901,6 +1915,7 @@ struct TodayFullArtworkDockCard: View {
 								.clipped()
 						}
 					}
+					.processors([.resize(size: CGSize(width: 500, height: 500))])
 				} else {
 					AppStoreIconView(url: item.app.iconURL, size: 128)
 						.shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
