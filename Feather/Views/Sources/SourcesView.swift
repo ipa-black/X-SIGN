@@ -15,10 +15,10 @@ import UIKit
 
 // MARK: - Dynamic Visual Identity (White, Black, Ocean Blue + Settings Tint)
 enum AppStoreTheme {
-	static let oceanBlue = Color(red: 0.00, green: 0.36, blue: 0.73) // #005BBB
-	static let deepOcean = Color(red: 0.02, green: 0.16, blue: 0.36) // #05295C
-	static let pureBlack = Color.black
-	static let cardSurface = Color(red: 0.10, green: 0.11, blue: 0.13)
+	nonisolated static let oceanBlue = Color(red: 0.00, green: 0.36, blue: 0.73) // #005BBB
+	nonisolated static let deepOcean = Color(red: 0.02, green: 0.16, blue: 0.36) // #05295C
+	nonisolated static let pureBlack = Color.black
+	nonisolated static let cardSurface = Color(red: 0.10, green: 0.11, blue: 0.13)
 	
 	static var dynamicAccent: Color {
 		let hex = UserDefaults.standard.string(forKey: "Feather.userTintColor") ?? "#005BBB"
@@ -28,21 +28,21 @@ enum AppStoreTheme {
 
 // MARK: - Protected Sources Vault (IPABLACK + store-api)
 enum ProtectedSourcesVault {
-	static let ipaBlackURLString = "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"
-	static let storeAPIURLString = "https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json"
+	nonisolated static let ipaBlackURLString = "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"
+	nonisolated static let storeAPIURLString = "https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json"
 	
-	static let coreURLs: [String] = [
+	nonisolated static let coreURLs: [String] = [
 		ipaBlackURLString,
 		storeAPIURLString
 	]
 	
-	static func isIPABlackSource(_ sourceURL: URL?, identifier: String? = nil) -> Bool {
+	nonisolated static func isIPABlackSource(_ sourceURL: URL?, identifier: String? = nil) -> Bool {
 		let urlStr = sourceURL?.absoluteString.lowercased() ?? ""
 		let idStr = identifier?.lowercased() ?? ""
 		return urlStr.contains("/ipablack/") || idStr == "xsign.core.ipablack"
 	}
 	
-	static func isHiddenCoreSource(_ source: AltSource) -> Bool {
+	nonisolated static func isHiddenCoreSource(_ source: AltSource) -> Bool {
 		let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
 		let idStr = source.identifier?.lowercased() ?? ""
 		return urlStr.contains("/ipablack/") ||
@@ -53,7 +53,7 @@ enum ProtectedSourcesVault {
 
 // MARK: - Bilingual Search & Localization Engine
 enum AppStoreBilingualEngine {
-	static let synonymGroups: [[String]] = [
+	nonisolated static let synonymGroups: [[String]] = [
 		["instagram", "insta", "ig", "rocket", "plus", "bhinsta", "انستقرام", "انستا", "انستجرام", "إنستجرام", "انستغرام", "إنستغرام"],
 		["whatsapp", "watusi", "wa", "واتساب", "واتس", "واتس اب", "وتساب"],
 		["tiktok", "tik tok", "lrd", "bh", "dl", "تيك توك", "تيكتوك", "تك توك"],
@@ -100,7 +100,7 @@ enum AppStoreBilingualEngine {
 		["ai", "chatgpt", "gemini", "claude", "ذكاء اصطناعي", "شات جي بي تي", "جيميناي"]
 	]
 	
-	static func normalize(_ text: String) -> String {
+	nonisolated static func normalize(_ text: String) -> String {
 		text.lowercased()
 			.replacingOccurrences(of: "أ", with: "ا")
 			.replacingOccurrences(of: "إ", with: "ا")
@@ -110,12 +110,11 @@ enum AppStoreBilingualEngine {
 			.trimmingCharacters(in: .whitespacesAndNewlines)
 	}
 	
-	static func buildFastSearchTokens(for app: ASRepository.App, category: AppStore2026Category) -> String {
-		let base = "\(app.name ?? "") \(app.id ?? "") \(category.rawValue)".lowercased()
-		return base
+	nonisolated static func buildFastSearchTokens(for app: ASRepository.App, category: AppStore2026Category) -> String {
+		"\(app.name ?? "") \(app.id ?? "") \(category.rawValue)".lowercased()
 	}
 	
-	static func matchesQuery(tokens: String, query: String) -> Bool {
+	nonisolated static func matchesQuery(tokens: String, query: String) -> Bool {
 		let normQuery = normalize(query)
 		guard !normQuery.isEmpty else { return true }
 		if tokens.contains(normQuery) { return true }
@@ -129,7 +128,7 @@ enum AppStoreBilingualEngine {
 		return false
 	}
 	
-	static func localizedSubtitle(for app: ASRepository.App, category: AppStore2026Category) -> String {
+	nonisolated static func localizedSubtitle(for app: ASRepository.App, category: AppStore2026Category) -> String {
 		let nameAndID = "\(app.name ?? "") \(app.id ?? "")".lowercased()
 		
 		if nameAndID.contains("instagram") || nameAndID.contains("insta") || nameAndID.contains("rocket") {
@@ -353,8 +352,10 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 		}
 	}
 	
-	static func strictlyClassify(app: ASRepository.App) -> AppStore2026Category {
+	nonisolated static func strictlyClassify(app: ASRepository.App) -> AppStore2026Category {
 		let nameAndBundle = "\(app.name ?? "") \(app.id ?? "") \(app.category ?? "")".lowercased()
+		let desc = (app.localizedDescription ?? app.subtitle ?? "").lowercased()
+		let combined = "\(nameAndBundle) \(desc)"
 		
 		let socialApps = ["instagram", "whatsapp", "tiktok", "snapchat", "twitter", "telegram", "facebook", "discord", "messenger", "reddit", "threads", "watusi", "bhinsta", "uplus", "rocket", "swiftgram", "nicegram", "wicked", "انستقرام", "واتس", "تيك توك", "سناب", "تليجرام", "تويتر", "فيسبوك", "ديسكورد"]
 		if socialApps.contains(where: { nameAndBundle.contains($0) }) { return .social }
@@ -435,7 +436,7 @@ final class AppStoreCacheManager: ObservableObject {
 	}
 	
 	private func loadInstantDiskSnapshot() {
-		Task.detached(priority: .userInteractive) {
+		Task.detached(priority: .userInitiated) {
 			var snapshotRepos: [(URL?, String?, ASRepository)] = []
 			let decoder = JSONDecoder()
 			
@@ -489,10 +490,9 @@ final class AppStoreCacheManager: ObservableObject {
 		
 		await withTaskGroup(of: (String, String, URL, ASRepository)?.self) { group in
 			for target in targets {
-				group.addTask(priority: .userInteractive) {
+				group.addTask(priority: .userInitiated) {
 					guard let url = URL(string: target.urlStr) else { return nil }
 					var request = URLRequest(url: url)
-					request.networkServiceType = .responsiveData
 					request.setValue("X-SIGN/2.0 (FastRepoFetch)", forHTTPHeaderField: "User-Agent")
 					
 					do {
@@ -507,15 +507,23 @@ final class AppStoreCacheManager: ObservableObject {
 				}
 			}
 			
-			var loadedSnapshot: [(URL?, String?, ASRepository)] = []
 			for await result in group {
-				if let (urlStr, id, url, repo) = result {
+				if let (urlStr, _, _, repo) = result {
 					directLoadedRepos[urlStr] = repo
-					loadedSnapshot.append((url, id, repo))
-					// دمج ذري فوري: لا نقوم بتفريغ القوائم المعروضة، بل نضيف السورس فوراً دون وميض
-					await Self.processAndPublish(snapshot: loadedSnapshot)
 				}
 			}
+		}
+		
+		// دمج ذري واحد لجميع المصادر معاً حتى لا تختفي أو ترمش أي قائمة على الشاشة
+		var finalSnapshot: [(URL?, String?, ASRepository)] = []
+		if let ipaRepo = directLoadedRepos[ProtectedSourcesVault.ipaBlackURLString] {
+			finalSnapshot.append((URL(string: ProtectedSourcesVault.ipaBlackURLString), "xsign.core.ipablack", ipaRepo))
+		}
+		if let storeRepo = directLoadedRepos[ProtectedSourcesVault.storeAPIURLString] {
+			finalSnapshot.append((URL(string: ProtectedSourcesVault.storeAPIURLString), "xsign.core.storeapi", storeRepo))
+		}
+		if !finalSnapshot.isEmpty {
+			await Self.processAndPublish(snapshot: finalSnapshot)
 		}
 	}
 	
@@ -546,7 +554,7 @@ final class AppStoreCacheManager: ObservableObject {
 			return
 		}
 		
-		Task.detached(priority: .userInteractive) {
+		Task.detached(priority: .userInitiated) {
 			await Self.processAndPublish(snapshot: combinedSnapshot)
 			await MainActor.run {
 				AppStoreCacheManager.shared.isBuildingCache = false
@@ -564,7 +572,7 @@ final class AppStoreCacheManager: ObservableObject {
 		var seenKeys = Set<String>()
 		
 		for (sourceURL, sourceID, repo) in snapshot {
-			let isIPABlack = await ProtectedSourcesVault.isIPABlackSource(sourceURL, identifier: sourceID)
+			let isIPABlack = ProtectedSourcesVault.isIPABlackSource(sourceURL, identifier: sourceID)
 			let sourceURLString = sourceURL?.absoluteString ?? ""
 			
 			var currentRepoItems: [AppStoreAppItem] = []
@@ -645,15 +653,20 @@ final class AppStoreCacheManager: ObservableObject {
 		let finalGames = onlyGames
 		let finalCats = categoryDict
 		
-		// تبديل ذري مباشر: لا يحدث وميض أو اختفاء للعناصر المعروضة نهائياً
 		await MainActor.run {
 			let manager = AppStoreCacheManager.shared
-			manager.ipablackItems = finalIPABlack
-			manager.ipablackEditorialNews = finalIPABlackNews
-			manager.allCombinedItems = finalAll
-			manager.pureAppsOnly = finalApps
-			manager.pureGamesOnly = finalGames
-			manager.itemsByCategory = finalCats
+			if !finalIPABlack.isEmpty {
+				manager.ipablackItems = finalIPABlack
+			}
+			if !finalIPABlackNews.isEmpty {
+				manager.ipablackEditorialNews = finalIPABlackNews
+			}
+			if !finalAll.isEmpty {
+				manager.allCombinedItems = finalAll
+				manager.pureAppsOnly = finalApps
+				manager.pureGamesOnly = finalGames
+				manager.itemsByCategory = finalCats
+			}
 		}
 	}
 }
@@ -695,7 +708,10 @@ final class AutoSignPipelineManager: ObservableObject {
 		cachedCertificate = Self.fetchActiveCertificate()
 	}
 	
-	// فحص ذكي لمجلد Payload لتطبيقات KhoIPA و store-api وقراءة Info.plist الحقيقي
+	nonisolated static func prewarmInfoPlist(for app: Imported) {
+		prewarmAndNormalizePayload(for: app)
+	}
+	
 	nonisolated static func prewarmAndNormalizePayload(for app: Imported) {
 		guard let uuid = app.uuid else { return }
 		let unsignedDir = FileManager.default.unsigned.appendingPathComponent(uuid)
@@ -719,11 +735,7 @@ final class AutoSignPipelineManager: ObservableObject {
 	}
 	
 	func downloadAndAutoSign(app: ASRepository.App) {
-		// استخراج رابط التنزيل المباشر الصحيح من مصفوفة versions أو downloadURL
-		let rawDownload = app.currentDownloadUrl?.absoluteString ??
-			app.versions?.first?.downloadURL.absoluteString ?? ""
-		
-		guard let url = URL(string: rawDownload) else { return }
+		guard let url = app.currentDownloadUrl ?? app.versions?.first?.downloadURL else { return }
 		let appKey = app.id ?? app.currentName
 		
 		guard activeStates[appKey] == nil else { return }
@@ -735,7 +747,6 @@ final class AutoSignPipelineManager: ObservableObject {
 		let existingUUIDs = Set(Self.fetchImportedApps().compactMap { $0.uuid })
 		
 		var request = URLRequest(url: url)
-		request.networkServiceType = .responsiveData
 		request.setValue("X-SIGN/2.0 (TurboDirect; iOS)", forHTTPHeaderField: "User-Agent")
 		
 		let task = turboSession.downloadTask(with: request) { [weak self] tempURL, _, error in
@@ -773,15 +784,15 @@ final class AutoSignPipelineManager: ObservableObject {
 				self.downloadProgress.removeValue(forKey: appKey)
 			}
 			
-			DispatchQueue.global(qos: .userInteractive).async {
-				autoreleasepool {
-					let dlID = "TurboDirect_\(UUID().uuidString)"
-					let dl = DownloadManager.shared.startArchive(from: fastFileURL, id: dlID)
-					try? DownloadManager.shared.handlePachageFile(url: fastFileURL, dl: dl)
-					try? FileManager.default.removeItem(at: fastFileURL)
-				}
-				
+			// استخدام معالج الحزم الأصلي FR.handlePackageFile لضمان فك ضغط KhoIPA وتطبيقات store-api بنجاح 100%
+			FR.handlePackageFile(fastFileURL) { [weak self] extractError in
+				try? FileManager.default.removeItem(at: fastFileURL)
 				Task { @MainActor in
+					guard let self else { return }
+					if extractError != nil {
+						self.activeStates[appKey] = nil
+						return
+					}
 					let updatedImported = Self.fetchImportedApps()
 					if let newlyImported = updatedImported.first(where: { item in
 						guard let uuid = item.uuid else { return false }
@@ -796,7 +807,7 @@ final class AutoSignPipelineManager: ObservableObject {
 			}
 		}
 		
-		let observation = task.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] progress, _ in
+		let observation = task.progress.observe(\Progress.fractionCompleted, options: [.new]) { [weak self] progress, _ in
 			let percent = max(1, min(99, Int(progress.fractionCompleted * 100)))
 			Task { @MainActor in
 				guard let self else { return }
