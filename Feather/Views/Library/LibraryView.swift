@@ -9,7 +9,7 @@ import SwiftUI
 import CoreData
 import NimbleViews
 
-// MARK: - Minimalist Signing View with 1-Click Instant Sign
+// MARK: - Minimalist Signing View with Zero-RAM Fast Import & Instant Sign
 struct LibraryView: View {
 	@StateObject var downloadManager = DownloadManager.shared
 	@StateObject var sourcesViewModel = SourcesViewModel.shared
@@ -101,7 +101,7 @@ struct LibraryView: View {
 					Section {
 						HStack(spacing: 10) {
 							ProgressView()
-								.tint(.blue)
+								.tint(AppStoreTheme.dynamicAccent)
 							Text(status)
 								.font(.subheadline.weight(.semibold))
 								.foregroundStyle(.white)
@@ -126,19 +126,19 @@ struct LibraryView: View {
 								
 								HStack(spacing: 10) {
 									Button {
-										_oneClickSign(app: app)
+										_ultraFastSign(app: app)
 									} label: {
 										HStack(spacing: 6) {
 											if _signingInProgressUUIDs.contains(app.uuid ?? "") {
 												ProgressView()
 													.tint(.white)
 													.scaleEffect(0.8)
-												Text("جاري التوقيع...")
+												Text("جاري التوقيع السريع...")
 													.font(.footnote.weight(.bold))
 											} else {
 												Image(systemName: "bolt.fill")
 													.font(.footnote.weight(.bold))
-												Text("توقيع وتثبيت بضغطة واحدة")
+												Text("توقيع وتثبيت فوري")
 													.font(.footnote.weight(.bold))
 											}
 										}
@@ -147,13 +147,7 @@ struct LibraryView: View {
 										.padding(.vertical, 8)
 										.background(
 											Capsule(style: .continuous)
-												.fill(
-													LinearGradient(
-														colors: [Color.blue, Color.indigo],
-														startPoint: .leading,
-														endPoint: .trailing
-													)
-												)
+												.fill(AppStoreTheme.dynamicAccent)
 										)
 									}
 									.buttonStyle(.plain)
@@ -197,9 +191,9 @@ struct LibraryView: View {
 				if _filteredSignedApps.isEmpty && _filteredImportedApps.isEmpty {
 					if #available(iOS 17, *) {
 						ContentUnavailableView {
-							Label("لا توجد تطبيقات", systemImage: "checkmark.seal")
+							Label("لا توجد تطبيقات", systemImage: "arcade.stick.console.fill")
 						} description: {
-							Text("اضغط على + لاستيراد ملف IPA وتوقيعه بضغطة واحدة.")
+							Text("استورد ملف IPA لتوقيعه وتثبيته بسرعة قصوى وبضغطة واحدة.")
 						} actions: {
 							Button("استيراد ملف IPA") {
 								_isImportingPresenting = true
@@ -225,15 +219,15 @@ struct LibraryView: View {
 						.disabled(_selectedAppUUIDs.isEmpty)
 					} else {
 						Menu {
-							Button("استيراد من الملفات", systemImage: "folder") {
+							Button("استيراد سريع من الملفات", systemImage: "folder") {
 								_isImportingPresenting = true
 							}
-							Button("استيراد من رابط", systemImage: "link") {
+							Button("استيراد من رابط مباشر", systemImage: "link") {
 								_isDownloadingPresenting = true
 							}
 						} label: {
-							Image(systemName: "plus.circle.fill")
-								.font(.system(size: 20))
+							Image(systemName: "arrow.down.doc.fill")
+								.font(.system(size: 18))
 						}
 						
 						AppStoreAccountAppIconButton {
@@ -260,12 +254,7 @@ struct LibraryView: View {
 					allowedContentTypes: [.ipa, .tipa],
 					allowsMultipleSelection: true,
 					onDocumentsPicked: { urls in
-						guard !urls.isEmpty else { return }
-						for url in urls {
-							let id = "FeatherManualDownload_\(UUID().uuidString)"
-							let dl = downloadManager.startArchive(from: url, id: id)
-							try? downloadManager.handlePachageFile(url: url, dl: dl)
-						}
+						_fastLowRAMImport(urls: urls)
 					}
 				)
 				.ignoresSafeArea()
@@ -300,7 +289,34 @@ struct LibraryView: View {
 		.preferredColorScheme(.dark)
 	}
 	
-	private func _oneClickSign(app: AppInfoPresentable) {
+	// MARK: - Zero-RAM-Spike Fast File Importer
+	private func _fastLowRAMImport(urls: [URL]) {
+		guard !urls.isEmpty else { return }
+		_oneClickStatusMessage = "جاري الاستيراد السريع (\(urls.count))..."
+		
+		Task.detached(priority: .userInitiated) {
+			for url in urls {
+				autoreleasepool {
+					let hasAccess = url.startAccessingSecurityScopedResource()
+					defer {
+						if hasAccess {
+							url.stopAccessingSecurityScopedResource()
+						}
+					}
+					let id = "FastImport_\(UUID().uuidString)"
+					let dl = DownloadManager.shared.startArchive(from: url, id: id)
+					try? DownloadManager.shared.handlePachageFile(url: url, dl: dl)
+				}
+			}
+			await MainActor.run {
+				_oneClickStatusMessage = nil
+				UINotificationFeedbackGenerator().notificationOccurred(.success)
+			}
+		}
+	}
+	
+	// MARK: - Ultra-Fast Instant Signing
+	private func _ultraFastSign(app: AppInfoPresentable) {
 		let selectedCertIndex = UserDefaults.standard.integer(forKey: "feather.selectedCert")
 		let activeCert: CertificatePair? = {
 			if _certificates.indices.contains(selectedCertIndex) {
@@ -312,15 +328,15 @@ struct LibraryView: View {
 		guard let cert = activeCert else {
 			UIAlertController.showAlertWithOk(
 				title: "لا توجد شهادة",
-				message: "يرجى إضافة شهادة توقيع أولاً من قائمة الإعدادات في الأعلى."
+				message: "يرجى إضافة شهادة توقيع أولاً من أيقونة الحساب في الأعلى."
 			)
 			return
 		}
 		
 		let uuid = app.uuid ?? ""
-		UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+		UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
 		_signingInProgressUUIDs.insert(uuid)
-		_oneClickStatusMessage = "جاري توقيع \(app.name ?? "التطبيق")..."
+		_oneClickStatusMessage = "جاري التوقيع الفوري لـ \(app.name ?? "التطبيق")..."
 		
 		let options = OptionsManager.shared.options
 		
