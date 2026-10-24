@@ -126,7 +126,6 @@ struct FeatherApp: App {
 						UIAlertController.showAlertWithOk(title: .localized("Error"), message: error.localizedDescription)
 					} else {
 						generator.notificationOccurred(.success)
-						AutoSignPipelineManager.shared.refreshCertificateCache()
 					}
 				}
 				
@@ -180,7 +179,7 @@ struct FeatherApp: App {
 	}
 }
 
-// MARK: - Exact Geometric Double-Slash Hollow "X" Shape (Matches Attached Image 37)
+// MARK: - Exact Geometric Double-Slash Hollow "X" Shape
 struct ExactGeometricXShape: Shape {
 	func path(in rect: CGRect) -> Path {
 		let w = rect.width
@@ -192,30 +191,30 @@ struct ExactGeometricXShape: Shape {
 		
 		var path = Path()
 		
-		// الشفرة اليسرى والعلوية (الذراع الأيسر المسطح + الشفرة القطرية الحادة الممتدة للأعلى والأسفل)
-		path.move(to: pt(0.645, 0.040))       // القمة الحادة الأولى في أعلى اليمين
-		path.addLine(to: pt(0.455, 0.355))    // النزول إلى زاوية التقاطع العلوية الداخلية
-		path.addLine(to: pt(0.395, 0.235))    // الصعود إلى الركن الداخلي العلوي الأيسر
-		path.addLine(to: pt(0.285, 0.235))    // الخط الأفقي الداخلي للذراع الأيسر
-		path.addLine(to: pt(0.422, 0.482))    // النزول إلى الخصر الداخلي الأيسر
-		path.addLine(to: pt(0.165, 0.945))    // النزول الحاد إلى الذيل الأيسر السفلي الأول
-		path.addLine(to: pt(0.388, 0.482))    // الصعود على الحافة الخارجية للخصر الأيسر
-		path.addLine(to: pt(0.228, 0.195))    // الصعود إلى الركن الخارجي العلوي الأيسر
-		path.addLine(to: pt(0.418, 0.195))    // السقف الأفقي العلوي للذراع الأيسر
-		path.addLine(to: pt(0.458, 0.282))    // النزول إلى قاع السبعة العلوية
+		// الشفرة اليسرى والعلوية
+		path.move(to: pt(0.645, 0.040))
+		path.addLine(to: pt(0.455, 0.355))
+		path.addLine(to: pt(0.395, 0.235))
+		path.addLine(to: pt(0.285, 0.235))
+		path.addLine(to: pt(0.422, 0.482))
+		path.addLine(to: pt(0.165, 0.945))
+		path.addLine(to: pt(0.388, 0.482))
+		path.addLine(to: pt(0.228, 0.195))
+		path.addLine(to: pt(0.418, 0.195))
+		path.addLine(to: pt(0.458, 0.282))
 		path.closeSubpath()
 		
-		// الشفرة اليمنى والسفلية (الذراع الأيمن المسطح + الشفرة القطرية الموازية الحادة)
-		path.move(to: pt(0.765, 0.048))       // القمة الحادة الثانية الموازية في أعلى اليمين
-		path.addLine(to: pt(0.578, 0.495))    // النزول على الحافة الخارجية للخصر الأيمن
-		path.addLine(to: pt(0.715, 0.755))    // النزول إلى الركن الخارجي السفلي الأيمن
-		path.addLine(to: pt(0.525, 0.755))    // القاعدة الأفقية السفلية للذراع الأيمن
-		path.addLine(to: pt(0.482, 0.665))    // الصعود إلى قمة الثمانية السفلية
-		path.addLine(to: pt(0.315, 0.952))    // النزول الحاد إلى الذيل الأيسر السفلي الثاني الموازي
-		path.addLine(to: pt(0.485, 0.592))    // الصعود إلى زاوية التقاطع السفلية الداخلية
-		path.addLine(to: pt(0.548, 0.715))    // النزول إلى الركن الداخلي السفلي الأيمن
-		path.addLine(to: pt(0.655, 0.715))    // الخط الأفقي الداخلي للذراع الأيمن
-		path.addLine(to: pt(0.538, 0.495))    // الصعود إلى الخصر الداخلي الأيمن
+		// الشفرة اليمنى والسفلية
+		path.move(to: pt(0.765, 0.048))
+		path.addLine(to: pt(0.578, 0.495))
+		path.addLine(to: pt(0.715, 0.755))
+		path.addLine(to: pt(0.525, 0.755))
+		path.addLine(to: pt(0.482, 0.665))
+		path.addLine(to: pt(0.315, 0.952))
+		path.addLine(to: pt(0.485, 0.592))
+		path.addLine(to: pt(0.548, 0.715))
+		path.addLine(to: pt(0.655, 0.715))
+		path.addLine(to: pt(0.538, 0.495))
 		path.closeSubpath()
 		
 		return path
@@ -244,7 +243,6 @@ struct XSignLaunchSplashView: View {
 		ZStack {
 			Color.black.ignoresSafeArea()
 			
-			// إضاءة محيطية ناعمة خلف حرف X
 			Circle()
 				.fill(
 					RadialGradient(
@@ -261,7 +259,6 @@ struct XSignLaunchSplashView: View {
 				.frame(width: 380, height: 380)
 			
 			ZStack {
-				// 1. طبقة البروز الخلفي ثلاثي الأبعاد 3D Extrusion
 				ExactGeometricXShape()
 					.trim(from: 0, to: strokeProgress)
 					.stroke(
@@ -272,7 +269,6 @@ struct XSignLaunchSplashView: View {
 					.offset(x: 4, y: 6)
 					.blur(radius: 3)
 				
-				// 2. التعبئة البيضاء الصافية للشفرتين (تظهر تدريجياً مع اكتمال الرسم)
 				ExactGeometricXShape()
 					.fill(
 						LinearGradient(
@@ -289,7 +285,6 @@ struct XSignLaunchSplashView: View {
 					.opacity(fillOpacity)
 					.shadow(color: Color.white.opacity(0.55 * glowIntensity), radius: 16, x: 0, y: 0)
 				
-				// 3. الرسم التدريجي الحاد لحواف حرف X (مطابق للصورة 37)
 				ExactGeometricXShape()
 					.trim(from: 0, to: strokeProgress)
 					.stroke(
@@ -327,13 +322,11 @@ struct XSignLaunchSplashView: View {
 	}
 	
 	private func startGeometricXAnimation() {
-		// رسم حواف الشفرتين ببطء وانسيابية
 		withAnimation(.easeInOut(duration: 2.1)) {
 			strokeProgress = 1.0
 			scaleValue = 1.0
 			depthAngle = 0.0
 		}
-		// إظهار السماكة البيضاء الكاملة للشفرتين
 		withAnimation(.easeInOut(duration: 1.1).delay(1.25)) {
 			fillOpacity = 1.0
 			glowIntensity = 1.0
@@ -386,7 +379,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		URLCache.shared.removeAllCachedResponses()
 	}
 	
-	// ضبط كاش الصور لاستهلاك رام منخفض جداً مع سرعة عرض قصوى
 	private func _createLowMemoryPipeline() {
 		DataLoader.sharedUrlCache.diskCapacity = 0
 		DataLoader.sharedUrlCache.memoryCapacity = 0
@@ -402,7 +394,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			let dataCache = try? DataCache(name: "thewonderofyou.Feather.datacache")
 			let imageCache = Nuke.ImageCache()
 			dataCache?.sizeLimit = 350 * 1024 * 1024
-			// سقف 45 ميجابايت فقط في الرام لمنع أي ارتفاع في استهلاك الذاكرة
 			imageCache.costLimit = 45 * 1024 * 1024
 			imageCache.countLimit = 120
 			$0.dataCache = dataCache
