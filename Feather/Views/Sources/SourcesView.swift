@@ -51,7 +51,7 @@ enum ProtectedSourcesVault {
 	}
 }
 
-// MARK: - Bilingual Search & Fast Localization Engine
+// MARK: - Bilingual Search & Localization Engine
 enum AppStoreBilingualEngine {
 	static let synonymGroups: [[String]] = [
 		["instagram", "insta", "ig", "rocket", "plus", "bhinsta", "انستقرام", "انستا", "انستجرام", "إنستجرام", "انستغرام", "إنستغرام"],
@@ -110,7 +110,6 @@ enum AppStoreBilingualEngine {
 			.trimmingCharacters(in: .whitespacesAndNewlines)
 	}
 	
-	// بناء سريع جداً لكلمات البحث دون إبطاء المعالج عند قراءة آلاف التطبيقات
 	static func buildFastSearchTokens(for app: ASRepository.App, category: AppStore2026Category) -> String {
 		let base = "\(app.name ?? "") \(app.id ?? "") \(category.rawValue)".lowercased()
 		return base
@@ -373,16 +372,16 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 		if devToolApps.contains(where: { nameAndBundle.contains($0) }) { return .devTools }
 		
 		let pvpKeywords = ["pubg", "8ball", "pool", "cod", "callofduty", "freefire", "brawl", "fortnite", "fifa", "efootball", "pes", "mobilelegends", "wildrift", "standoff", "bullet", "pvp", "multiplayer", "ببجي", "بلياردو", "فري فاير", "كود", "فيفا", "بيس"]
-		if pvpKeywords.contains(where: { nameAndBundle.contains($0) }) { return .pvpGames }
+		if pvpKeywords.contains(where: { combined.contains($0) }) { return .pvpGames }
 		
 		let strategyKeywords = ["clash", "royale", "clans", "strategy", "chess", "tower", "defense", "war", "empire", "civilization", "boombeach", "plantsvs", "كلاش", "شطرنج", "حرب", "استراتيجيه"]
-		if strategyKeywords.contains(where: { nameAndBundle.contains($0) }) { return .strategyGames }
+		if strategyKeywords.contains(where: { combined.contains($0) }) { return .strategyGames }
 		
 		let simulationKeywords = ["roblox", "minecraft", "sims", "simcity", "gta", "rockstar", "sanandreas", "parking", "simulator", "bus", "truck", "flight", "farm", "hayday", "township", "روبلوكس", "ماين كرافت", "قراند", "محاكاة", "مزرعه"]
-		if simulationKeywords.contains(where: { nameAndBundle.contains($0) }) { return .simulationGames }
+		if simulationKeywords.contains(where: { combined.contains($0) }) { return .simulationGames }
 		
 		let puzzleKeywords = ["puzzle", "candy", "crush", "match", "brain", "sudoku", "word", "gardenscapes", "homescapes", "royalmatch", "angrybirds", "cuttherope", "2048", "trivia", "الغاز", "ألغاز", "ذكاء", "كلمات"]
-		if puzzleKeywords.contains(where: { nameAndBundle.contains($0) }) { return .puzzleGames }
+		if puzzleKeywords.contains(where: { combined.contains($0) }) { return .puzzleGames }
 		
 		let casualGameKeywords = [
 			"game", "games", "gaming", "arcade", "subway", "surfers", "minion", "temple", "run", "sonic",
@@ -392,13 +391,13 @@ enum AppStore2026Category: String, CaseIterable, Identifiable {
 			"zynga", "rovio", "ketchapp", "voodoo", "miniclip", "ubisoft", "activision", "konami", "sega",
 			"لعبة", "لعبه", "العاب", "ألعاب"
 		]
-		if casualGameKeywords.contains(where: { nameAndBundle.contains($0) }) { return .casualGames }
+		if casualGameKeywords.contains(where: { combined.contains($0) }) { return .casualGames }
 		
 		return .productivity
 	}
 }
 
-// MARK: - Instant Disk Cache & Parallel Direct Repo Loader (0.01s Store Startup!)
+// MARK: - Instant Zero-Disappearance Store Cache Manager
 @MainActor
 final class AppStoreCacheManager: ObservableObject {
 	static let shared = AppStoreCacheManager()
@@ -425,14 +424,13 @@ final class AppStoreCacheManager: ObservableObject {
 	private nonisolated static let fastRepoSession: URLSession = {
 		let config = URLSessionConfiguration.default
 		config.networkServiceType = .responsiveData
-		config.httpMaximumConnectionsPerHost = 8
-		config.timeoutIntervalForRequest = 12
+		config.httpMaximumConnectionsPerHost = 12
+		config.timeoutIntervalForRequest = 15
 		config.requestCachePolicy = .reloadIgnoringLocalCacheData
 		return URLSession(configuration: config)
 	}()
 	
 	init() {
-		// قراءة فورية من كاش القرص في اللحظة الأولى لفتح التطبيق (0.01 ثانية)
 		loadInstantDiskSnapshot()
 	}
 	
@@ -463,10 +461,8 @@ final class AppStoreCacheManager: ObservableObject {
 		guard !isFetching else { return }
 		isFetching = true
 		
-		// جلب متوازٍ مباشر وفوري للسورسين الأساسيين دون انتظار CoreData
 		await fetchCoreReposDirectlyInParallel()
 		
-		// جلب أي سورسات إضافية خاصة بالمستخدم في الخلفية
 		let customSources = sources.filter { !ProtectedSourcesVault.isHiddenCoreSource($0) }
 		if !customSources.isEmpty {
 			await viewModel.fetchSources(sources)
@@ -497,6 +493,7 @@ final class AppStoreCacheManager: ObservableObject {
 					guard let url = URL(string: target.urlStr) else { return nil }
 					var request = URLRequest(url: url)
 					request.networkServiceType = .responsiveData
+					request.setValue("X-SIGN/2.0 (FastRepoFetch)", forHTTPHeaderField: "User-Agent")
 					
 					do {
 						let (data, _) = try await Self.fastRepoSession.data(for: request)
@@ -515,7 +512,7 @@ final class AppStoreCacheManager: ObservableObject {
 				if let (urlStr, id, url, repo) = result {
 					directLoadedRepos[urlStr] = repo
 					loadedSnapshot.append((url, id, repo))
-					// عرض تدريجي فوري: بمجرد وصول أول سورس نعرضه فوراً على الشاشة ولا ننتظر الثاني!
+					// دمج ذري فوري: لا نقوم بتفريغ القوائم المعروضة، بل نضيف السورس فوراً دون وميض
 					await Self.processAndPublish(snapshot: loadedSnapshot)
 				}
 			}
@@ -648,6 +645,7 @@ final class AppStoreCacheManager: ObservableObject {
 		let finalGames = onlyGames
 		let finalCats = categoryDict
 		
+		// تبديل ذري مباشر: لا يحدث وميض أو اختفاء للعناصر المعروضة نهائياً
 		await MainActor.run {
 			let manager = AppStoreCacheManager.shared
 			manager.ipablackItems = finalIPABlack
@@ -660,7 +658,7 @@ final class AppStoreCacheManager: ObservableObject {
 	}
 }
 
-// MARK: - Turbo ZSign & Direct Info.plist Instant Pipeline (IPA Soon Speed)
+// MARK: - Universal IPABlack & KhoIPA Payload Extractor + Instant ZSign
 @MainActor
 final class AutoSignPipelineManager: ObservableObject {
 	static let shared = AutoSignPipelineManager()
@@ -697,17 +695,35 @@ final class AutoSignPipelineManager: ObservableObject {
 		cachedCertificate = Self.fetchActiveCertificate()
 	}
 	
-	nonisolated static func prewarmInfoPlist(for app: Imported) {
+	// فحص ذكي لمجلد Payload لتطبيقات KhoIPA و store-api وقراءة Info.plist الحقيقي
+	nonisolated static func prewarmAndNormalizePayload(for app: Imported) {
 		guard let uuid = app.uuid else { return }
 		let unsignedDir = FileManager.default.unsigned.appendingPathComponent(uuid)
-		guard let contents = try? FileManager.default.contentsOfDirectory(at: unsignedDir, includingPropertiesForKeys: nil),
-			  let appBundle = contents.first(where: { $0.pathExtension == "app" }) else { return }
-		let infoPlistURL = appBundle.appendingPathComponent("Info.plist")
-		_ = NSDictionary(contentsOf: infoPlistURL)
+		
+		guard let enumerator = FileManager.default.enumerator(
+			at: unsignedDir,
+			includingPropertiesForKeys: [.isDirectoryKey],
+			options: [.skipsHiddenFiles]
+		) else { return }
+		
+		for case let fileURL as URL in enumerator {
+			if fileURL.pathExtension == "app" {
+				let infoPlistURL = fileURL.appendingPathComponent("Info.plist")
+				if let plist = NSDictionary(contentsOf: infoPlistURL) {
+					_ = plist["CFBundleExecutable"]
+					_ = plist["CFBundleIdentifier"]
+				}
+				break
+			}
+		}
 	}
 	
 	func downloadAndAutoSign(app: ASRepository.App) {
-		guard let url = app.currentDownloadUrl else { return }
+		// استخراج رابط التنزيل المباشر الصحيح من مصفوفة versions أو downloadURL
+		let rawDownload = app.currentDownloadUrl?.absoluteString ??
+			app.versions?.first?.downloadURL.absoluteString ?? ""
+		
+		guard let url = URL(string: rawDownload) else { return }
 		let appKey = app.id ?? app.currentName
 		
 		guard activeStates[appKey] == nil else { return }
@@ -720,7 +736,7 @@ final class AutoSignPipelineManager: ObservableObject {
 		
 		var request = URLRequest(url: url)
 		request.networkServiceType = .responsiveData
-		request.setValue("X-SIGN/2.0 (TurboZSign; iOS)", forHTTPHeaderField: "User-Agent")
+		request.setValue("X-SIGN/2.0 (TurboDirect; iOS)", forHTTPHeaderField: "User-Agent")
 		
 		let task = turboSession.downloadTask(with: request) { [weak self] tempURL, _, error in
 			guard let self else { return }
@@ -771,7 +787,7 @@ final class AutoSignPipelineManager: ObservableObject {
 						guard let uuid = item.uuid else { return false }
 						return !existingUUIDs.contains(uuid)
 					}) ?? updatedImported.first {
-						Self.prewarmInfoPlist(for: newlyImported)
+						Self.prewarmAndNormalizePayload(for: newlyImported)
 						self.triggerInstantZSign(for: newlyImported, appKey: appKey)
 					} else {
 						self.activeStates[appKey] = nil
