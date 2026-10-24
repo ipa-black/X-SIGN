@@ -1,4 +1,4 @@
-name: Install XSign Source Update Once and Build
+name: Restore X-SIGN Before All Changes
 
 on:
   workflow_dispatch:
@@ -8,294 +8,66 @@ permissions:
 
 concurrency:
   group: xsign-ui-update-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  apply-and-build:
-    if: github.ref_type == 'branch'
-    runs-on: macos-latest
-    timeout-minutes: 45
+  restore:
+    if: github.repository == 'ipa-black/X-SIGN' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
+      - name: Checkout main and its history
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }}
-          submodules: recursive
+          ref: main
           fetch-depth: 0
 
-      - name: Install reviewed changes into original source files once
+      - name: Restore the exact original repository files
         shell: bash
-        run: |
-          python3 - <<'XSIGN_PY'
-          from pathlib import Path
-          import ast
-          import hashlib
-          import json
-          import subprocess
-          import textwrap
-
-          root = Path.cwd()
-          marker = root / "Scripts/xsign-ui-installed.json"
-          pending = root / ".xsign-update-files.json"
-          pending.unlink(missing_ok=True)
-          update_id = "xsign-launch-dock-downloads-v1"
-
-          if marker.is_file():
-              if json.loads(marker.read_text()).get("update_id") != update_id:
-                  raise SystemExit("Unknown installed update.")
-              print("Already installed. Keeping your current source edits.")
-              raise SystemExit(0)
-
-          # Read the reviewed payload recorded in this repository's history.
-          ref = "587d4cf69af14da624c25d55fef3133cc772faed"
-          path = ".github/workflows/xsign-ui-update.yml"
-          raw = subprocess.check_output(["git", "show", f"{ref}:{path}"])
-          blob = hashlib.sha1(
-              b"blob " + str(len(raw)).encode() + b"\0" + raw
-          ).hexdigest()
-
-          if blob != "21e5331506e539d151f153fcd7e2d0841a1beabb":
-              raise SystemExit("The stored update payload does not match review.")
-
-          text = raw.decode("utf-8")
-          start = text.index("          from pathlib import Path\n")
-          end = text.index("          XSIGN_PY\n", start)
-          tree = ast.parse(textwrap.dedent(text[start:end]))
-
-          files = None
-          for node in tree.body:
-              if isinstance(node, ast.Assign):
-                  if any(
-                      isinstance(t, ast.Name) and t.id == "FILES"
-                      for t in node.targets
-                  ):
-                      files = ast.literal_eval(node.value)
-                      break
-
-          if not isinstance(files, list) or not files:
-              raise SystemExit("Missing source update payload.")
-
-          image_path = Path(
-              "Feather/Resources/Assets.xcassets/"
-              "XSignLaunch.imageset/XSignLaunch.png"
-          )
-
-          candidates = [
-              root / "XSignLaunch.png",
-              root / "XSignLaunch.png.PNG",
-              root / "XSignLaunch.PNG",
-              root / image_path,
-          ]
-
-          image_source = next(
-              (p for p in candidates if p.is_file()),
-              None
-          )
-
-          if image_source is None:
-              raise SystemExit(
-                  "Upload the XSign logo PNG at the repository root."
-              )
-
-          image = image_source.read_bytes()
-          if not image.startswith(b"\x89PNG\r\n\x1a\n"):
-              raise SystemExit("The logo must be an actual PNG file.")
-
-          writes = []
-          paths = []
-
-          for item in files:
-              name = item["path"]
-
-              if name.startswith(".github/"):
-                  continue
-
-              relative = Path(name)
-              if relative.is_absolute() or ".." in relative.parts:
-                  raise SystemExit("Invalid source path.")
-
-              target = root / relative
-              paths.append(name)
-              old = target.read_bytes() if target.is_file() else None
-
-              if (
-                  old is not None
-                  and hashlib.sha256(old).hexdigest() == item["result"]
-              ):
-                  continue
-
-              if old is None:
-                  if item["base"] is not None:
-                      raise SystemExit("Missing original file: " + name)
-              else:
-                  original = hashlib.sha1(
-                      b"blob " + str(len(old)).encode() + b"\0" + old
-                  ).hexdigest()
-
-                  if original != item["base"]:
-                      raise SystemExit(
-                          "File changed since review; nothing overwritten: "
-                          + name
-                      )
-
-              if "text" in item:
-                  new = item["text"].replace(r"\t", "\t").encode("utf-8")
-              else:
-                  lines = old.decode("utf-8").splitlines(keepends=True)
-
-                  for start, end, replacement in reversed(item["edits"]):
-                      lines[start:end] = replacement.replace(
-                          r"\t", "\t"
-                      ).splitlines(keepends=True)
-
-                  new = "".join(lines).encode("utf-8")
-
-              if hashlib.sha256(new).hexdigest() != item["result"]:
-                  raise SystemExit("Source validation failed: " + name)
-
-              writes.append((target, new))
-
-          destination = root / image_path
-
-          if destination.is_file() and destination.read_bytes() != image:
-              raise SystemExit(
-                  "Existing launch image differs; nothing overwritten."
-              )
-
-          if not destination.is_file():
-              writes.append((destination, image))
-
-          paths.append(image_path.as_posix())
-
-          marker_data = {
-              "update_id": update_id,
-              "note": "Edit source files directly; later runs preserve your edits.",
-          }
-
-          writes.append((
-              marker,
-              (json.dumps(marker_data, indent=2) + "\n").encode()
-          ))
-
-          paths.append(marker.relative_to(root).as_posix())
-
-          # Validate every original before writing any updated source.
-          for target, data in writes:
-              target.parent.mkdir(parents=True, exist_ok=True)
-              target.write_bytes(data)
-
-          pending.write_text(json.dumps(paths))
-          print(
-              "Updated", len(writes),
-              "files. Saving to the selected branch next."
-          )
-          XSIGN_PY
-
-      - name: Save source files permanently to the selected branch
-        shell: bash
-        env:
-          TARGET_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          if [ ! -f .xsign-update-files.json ]; then
-            printf 'The update is installed. Building your current source files.\n' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+          original="ae320f4af04a60746f3c36f7f8724370b4d4d0d2"
+          expected_tree="a2b8bd02e7f97c34fb4c59619d22820cd81ed11d"
 
-          current_branch="$(git branch --show-current)"
+          parent="$(git rev-parse HEAD)"
+          original_tree="$(git rev-parse "$original^{tree}")"
 
-          if [ "$current_branch" != "$TARGET_BRANCH" ]; then
-            printf 'Checkout must be on the selected branch.\n' >&2
+          if [ "$original_tree" != "$expected_tree" ]; then
+            printf 'Original snapshot verification failed. Nothing changed.\n' >&2
             exit 1
           fi
 
-          python3 - <<'PY'
-          from pathlib import Path
-          import json
-          import subprocess
+          git merge-base --is-ancestor "$original" "$parent"
 
-          paths = json.loads(
-              Path(".xsign-update-files.json").read_text()
-          )
-
-          if not paths or any(p.startswith(".github/") for p in paths):
-              raise SystemExit("Expected application source files only.")
-
-          subprocess.run(
-              ["git", "add", "--", *paths],
-              check=True
-          )
-          PY
-
-          if git diff --cached --quiet; then
-            printf 'Source files are already saved.\n' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$(git rev-parse "$parent^{tree}")" = "$original_tree" ]; then
+            printf 'Repository already matches the original snapshot.\n' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          git \
+          restored="$(git \
             -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "Install XSign launch, dock and bounded downloads in source files"
+            commit-tree "$original_tree" -p "$parent" \
+            -m "Restore X-SIGN exactly before the launch, dock and download changes")"
 
-          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          test "$(git rev-parse "$restored^{tree}")" = "$expected_tree"
 
-          saved_commit="$(git rev-parse HEAD)"
+          git diff --exit-code "$original" "$restored" --
 
-          printf 'Saved source files to `%s`. Edit the Swift files directly. Commit: %s/%s/commit/%s\n' \
-            "$TARGET_BRANCH" \
+          git push origin "$restored:refs/heads/main"
+
+          remote_head="$(git ls-remote --refs origin refs/heads/main | cut -f1)"
+          test "$remote_head" = "$restored"
+
+          printf 'Restored main exactly to the files from %s.\n' \
+            "$original" >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'Removed the added XSignLaunch images, update files and installer workflow.\n' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'Restore commit: %s/%s/commit/%s\n' \
             "$GITHUB_SERVER_URL" \
             "$GITHUB_REPOSITORY" \
-            "$saved_commit" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Select installed Xcode 26
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          selected="$(python3 - <<'PY'
-          from pathlib import Path
-
-          versions = sorted(
-              Path("/Applications").glob("Xcode_26*.app")
-          )
-
-          if not versions:
-              raise SystemExit("Xcode 26 is required.")
-
-          print(versions[-1] / "Contents/Developer")
-          PY
-          )"
-
-          sudo xcode-select -s "$selected"
-          xcodebuild -version
-
-      - name: Test download queue and package gate
-        run: python3 Scripts/run_download_smoke.py
-
-      - name: Build IPA
-        run: make
-
-      - name: Verify packaged launch screen
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import plistlib
-
-          app = Path("_build/Payload/X-SIGN.app")
-          info = plistlib.loads((app / "Info.plist").read_bytes())
-
-          assert info.get("UILaunchStoryboardName") == "Launch Screen"
-          assert (app / "Launch Screen.storyboardc").is_dir()
-
-          print("PASS: XSign launch storyboard is packaged.")
-          PY
-
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: X-SIGN-UI-Update
-          path: packages/*.ipa
-          if-no-files-found: error
+            "$restored" >> "$GITHUB_STEP_SUMMARY"
