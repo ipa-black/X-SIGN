@@ -289,46 +289,35 @@ struct LibraryView: View {
 		.preferredColorScheme(.dark)
 	}
 	
-	// MARK: - Direct APFS-Link Turbo File Importer (Instant ZSign - Zero RAM Overhead)
+	// MARK: - Direct Native Importer + Instant Auto-Sign
 	private func _instantImportAndAutoSign(urls: [URL]) {
-		guard !urls.isEmpty else { return }
+		guard let firstURL = urls.first else { return }
 		_oneClickStatusMessage = "استيراد وقراءة سريعة لـ Info.plist..."
 		
 		let existingUUIDs = Set(AutoSignPipelineManager.fetchImportedApps().compactMap { $0.uuid })
+		let hasAccess = firstURL.startAccessingSecurityScopedResource()
 		
-		DispatchQueue.global(qos: .userInteractive).async {
-			for url in urls {
-				autoreleasepool {
-					let hasAccess = url.startAccessingSecurityScopedResource()
-					defer {
-						if hasAccess {
-							url.stopAccessingSecurityScopedResource()
-						}
-					}
-					
-					let directID = "InstantImport_\(UUID().uuidString)"
-					let dl = DownloadManager.shared.startArchive(from: url, id: directID)
-					try? DownloadManager.shared.handlePachageFile(url: url, dl: dl)
-				}
+		FR.handlePackageFile(firstURL) { error in
+			if hasAccess {
+				firstURL.stopAccessingSecurityScopedResource()
 			}
-			
 			DispatchQueue.main.async {
+				if error != nil {
+					_oneClickStatusMessage = nil
+					return
+				}
 				let updatedImported = AutoSignPipelineManager.fetchImportedApps()
 				if let newlyImported = updatedImported.first(where: { item in
 					guard let uuid = item.uuid else { return false }
 					return !existingUUIDs.contains(uuid)
-				}) ?? currentImportedFallback() {
-					AutoSignPipelineManager.prewarmInfoPlist(for: newlyImported)
+				}) ?? updatedImported.first {
+					AutoSignPipelineManager.prewarmAndNormalizePayload(for: newlyImported)
 					_ultraFastSign(app: newlyImported)
 				} else {
 					_oneClickStatusMessage = nil
 				}
 			}
 		}
-	}
-	
-	private func currentImportedFallback() -> Imported? {
-		AutoSignPipelineManager.fetchImportedApps().first
 	}
 	
 	// MARK: - Ultra-Fast Instant Signing via ZSign
