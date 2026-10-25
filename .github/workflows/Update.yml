@@ -1,4 +1,4 @@
-name: X-SIGN App Icon and Saudi Images
+name: X-SIGN Description Translation
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: xsign-arabic-icons-${{ github.ref }}
+  group: xsign-description-translation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -23,159 +23,185 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Apply reviewed changes
+      - name: Add description translation
         shell: bash
         run: |
           python3 - <<'XSIGN_PY'
           from pathlib import Path
-          import hashlib
+          import re
 
-          path = Path('Feather/Views/Sources/SourcesView.swift')
-          raw = path.read_bytes()
-          blob = hashlib.sha1(
-              b'blob ' + str(len(raw)).encode() + b'\0' + raw
-          ).hexdigest()
+          swift_code = r'''import SwiftUI
+          import Translation
 
-          expected = 'c790f78ad3bcc528591a80c729f01e987b3be226'
+          struct XSignTranslatableDescription: View {
+              let text: String
+              let accentColor: Color
 
-          if blob != expected:
-              raise SystemExit(
-                  'SourcesView.swift changed or this patch was already applied. '
-                  'Review the current file before applying again.'
-              )
-
-          text = raw.decode('utf-8')
-
-          def replace_once(old, new, expected_count=1):
-              global text
-              if text.count(old) != expected_count:
-                  raise SystemExit(
-                      'Unexpected source structure; no file was written: '
-                      + old[:90]
-                  )
-              text = text.replace(old, new)
-
-          start = text.index(
-              'struct AppStoreAccountAppIconButton: View {'
-          )
-          end = text.index(
-              '// MARK: - Authentic Apple App Store Today Cards',
-              start
-          )
-
-          text = text[:start] + '''struct AppStoreAccountAppIconButton: View {
-              let action: () -> Void
+              @State private var isTranslationPresented = false
+              @State private var translatedText: String?
+              @State private var isExpanded = false
 
               var body: some View {
-                  Button(action: action) {
-                      FRAppIconView(size: 38)
-                          .frame(width: 38, height: 38)
-                          .clipShape(Circle())
-                          .overlay {
-                              Circle()
-                                  .stroke(
-                                      Color.white.opacity(0.28),
-                                      lineWidth: 1.1
-                                  )
-                          }
+                  Group {
+                      if #available(iOS 17.4, macOS 14.4, *) {
+                          content
+                              .translationPresentation(
+                                  isPresented: $isTranslationPresented,
+                                  text: text
+                              ) { result in
+                                  translatedText = result
+                                  isExpanded = true
+                                  isTranslationPresented = false
+                              }
+                      } else {
+                          content
+                      }
                   }
-                  .buttonStyle(.plain)
-                  .accessibilityLabel("الإعدادات")
+                  .onChange(of: text) { _ in
+                      isTranslationPresented = false
+                      translatedText = nil
+                      isExpanded = false
+                  }
+              }
+
+              private var content: some View {
+                  VStack(alignment: .leading, spacing: 10) {
+                      HStack(alignment: .firstTextBaseline) {
+                          Text("الوصف")
+                              .font(.system(size: 22, weight: .bold))
+                              .foregroundStyle(.white)
+
+                          Spacer(minLength: 12)
+
+                          if #available(iOS 17.4, macOS 14.4, *) {
+                              Button {
+                                  isTranslationPresented = true
+                              } label: {
+                                  Label("ترجمة الوصف", systemImage: "translate")
+                                      .font(.subheadline.weight(.semibold))
+                              }
+                              .foregroundStyle(accentColor)
+                              .buttonStyle(.plain)
+                              .disabled(
+                                  text.trimmingCharacters(
+                                      in: .whitespacesAndNewlines
+                                  ).isEmpty
+                              )
+                          }
+                      }
+
+                      Text(verbatim: translatedText ?? text)
+                          .font(.system(size: 15))
+                          .foregroundStyle(.white.opacity(0.88))
+                          .lineSpacing(5)
+                          .lineLimit(isExpanded ? nil : 6)
+                          .textSelection(.enabled)
+
+                      HStack(spacing: 18) {
+                          Button(isExpanded ? "عرض أقل" : "المزيد") {
+                              withAnimation(.easeInOut(duration: 0.2)) {
+                                  isExpanded.toggle()
+                              }
+                          }
+
+                          if translatedText != nil {
+                              Button("عرض الأصل") {
+                                  translatedText = nil
+                              }
+                          }
+                      }
+                      .font(.subheadline.weight(.bold))
+                      .foregroundStyle(accentColor)
+                      .buttonStyle(.plain)
+                  }
               }
           }
+          '''
 
-          ''' + text[end:]
-
-          replace_once(
-              '''Text("X")
-          \t\t\t\t\t\t\t\t.font(.system(size: 24, weight: .black, design: .rounded))
-          \t\t\t\t\t\t\t\t.foregroundStyle(.white)''',
-              'FRAppIconView(size: 48)'
+          source = Path(
+              "Feather/Views/Sources/SourcesView.swift"
+          )
+          helper = Path(
+              "Feather/Views/Sources/Apps/Detail/"
+              "XSignTranslatableDescription.swift"
           )
 
-          replace_once(
-              'XSignAppleMetadataCache_v3',
-              'XSignAppleMetadataCache_SA_v4'
-          )
+          text = source.read_text(encoding="utf-8")
 
           start = text.index(
-              '\t\tlet task = Task<AppleStoreRichMetadata?, Never> {'
+              "struct AppStore2026DetailView: View {"
           )
           end = text.index(
-              '\n\t\tinFlightTasks[cacheKey] = task',
+              "struct AppStoreStatBadge: View {",
               start
           )
 
-          text = text[:start] + r'''        let task = Task<AppleStoreRichMetadata?, Never> {
-                      if let bID = bundleID, bID.contains("."), !bID.hasPrefix("games."),
-                         let encodedID = bID.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
-                         let found = await Self.queryiTunes(
-                             urlString: "https://itunes.apple.com/lookup?bundleId=\(encodedID)&country=SA"
-                         ) {
-                          return found
-                      }
+          detail = text[start:end]
 
-                      let cleanedName = Self.cleanSearchTitle(appName)
-                      if let encoded = cleanedName.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
-                          return await Self.queryiTunes(
-                              urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=SA"
-                          )
-                      }
-                      return nil
-                  }
-                  ''' + text[end:]
-
-          replace_once(
-              '''request.timeoutInterval = 8
-          \t\t\tlet (data, _) = try await URLSession.shared.data(for: request)''',
-              '''request.timeoutInterval = 8
-          \t\t\trequest.setValue("ar-SA,ar;q=0.9", forHTTPHeaderField: "Accept-Language")
-          \t\t\tlet (data, response) = try await URLSession.shared.data(for: request)
-          \t\t\tguard let http = response as? HTTPURLResponse,
-          \t\t\t      (200..<300).contains(http.statusCode) else { return nil }'''
+          pattern = re.compile(
+              r'^([ \t]*)VStack\(alignment: \.leading, spacing: 10\) \{\n'
+              r'[ \t]*Text\("الوصف"\).*?^\1\}\n'
+              r'\1\.padding\(\.horizontal, 18\)',
+              re.MULTILINE | re.DOTALL
           )
 
-          replace_once(
-              '''private var displayScreenshots: [URL] {
-          \t\tif !item.screenshots.isEmpty { return item.screenshots }
-          \t\treturn appleMetadata?.screenshots ?? []
-          \t}''',
-              '''private var displayScreenshots: [URL] {
-          \t\tif let screenshots = appleMetadata?.screenshots, !screenshots.isEmpty {
-          \t\t\treturn screenshots
-          \t\t}
-          \t\treturn item.screenshots
-          \t}'''
+          matches = list(pattern.finditer(detail))
+
+          call = (
+              "XSignTranslatableDescription("
+              "text: displayDescription, accentColor: accentColor)"
           )
 
-          replace_once(
-              'let displayBanner = bannerImageURL ?? liveScreenshots.first',
-              'let displayBanner = liveScreenshots.first ?? bannerImageURL'
+          if len(matches) == 1:
+              match = matches[0]
+              indent = match.group(1)
+
+              replacement = (
+                  indent + call
+                  + "\n"
+                  + indent + ".padding(.horizontal, 18)"
+              )
+
+              detail = (
+                  detail[:match.start()]
+                  + replacement
+                  + detail[match.end():]
+              )
+
+              detail = re.sub(
+                  r'^[ \t]*@State private var isDescriptionExpanded = false\n',
+                  "",
+                  detail,
+                  count=1,
+                  flags=re.MULTILINE
+              )
+
+          elif len(matches) == 0 and call in detail:
+              pass
+
+          else:
+              raise SystemExit(
+                  "Description section changed; no files were written."
+              )
+
+          if (
+              helper.exists()
+              and helper.read_text(encoding="utf-8") != swift_code
+          ):
+              raise SystemExit(
+                  "Translation helper has other changes; "
+                  "no files were written."
+              )
+
+          helper.parent.mkdir(parents=True, exist_ok=True)
+          helper.write_text(swift_code, encoding="utf-8")
+
+          source.write_text(
+              text[:start] + detail + text[end:],
+              encoding="utf-8"
           )
 
-          replace_once(
-              'if bannerImageURL == nil && item.screenshots.isEmpty {',
-              'if liveScreenshots.isEmpty {'
-          )
-
-          replace_once(
-              'let displayImg = item.screenshots.first ?? liveScreenshots.first',
-              'let displayImg = liveScreenshots.first ?? item.screenshots.first'
-          )
-
-          replace_once(
-              'if item.screenshots.isEmpty {',
-              'if liveScreenshots.isEmpty {',
-              2
-          )
-
-          replace_once(
-              'let displayScreenshots = item.screenshots.isEmpty ? liveScreenshots : item.screenshots',
-              'let displayScreenshots = liveScreenshots.isEmpty ? item.screenshots : liveScreenshots'
-          )
-
-          path.write_bytes(text.encode('utf-8'))
-          print('Applied: native app icons and Saudi App Store screenshots.')
+          print("Description translation button added.")
           XSIGN_PY
 
       - name: Build IPA
@@ -193,29 +219,33 @@ jobs:
           make
           test -s packages/X-SIGN.ipa
 
-      - name: Save changes to a new branch
+      - name: Save reviewed changes
         shell: bash
         run: |
           set -euo pipefail
 
-          UPDATE_BRANCH="xsign-arabic-icons-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git add -- \
+            Feather/Views/Sources/SourcesView.swift \
+            Feather/Views/Sources/Apps/Detail/XSignTranslatableDescription.swift
 
-          git switch -c "$UPDATE_BRANCH"
-          git add -- Feather/Views/Sources/SourcesView.swift
+          if ! git diff --cached --quiet; then
+            UPDATE_BRANCH="xsign-translation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          git \
-            -c user.name='github-actions[bot]' \
-            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit -m 'Use native app icons and Saudi App Store screenshots'
+            git switch -c "$UPDATE_BRANCH"
 
-          git push origin "HEAD:refs/heads/$UPDATE_BRANCH"
+            git \
+              -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m 'Add native description translation button'
 
-          echo "Updated branch: $UPDATE_BRANCH" >> "$GITHUB_STEP_SUMMARY"
-          echo "Merge this branch into your working branch to retain the changes." >> "$GITHUB_STEP_SUMMARY"
+            git push origin "HEAD:refs/heads/$UPDATE_BRANCH"
+
+            echo "Updated branch: $UPDATE_BRANCH" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: X-SIGN-Arabic-Icons
+          name: X-SIGN-Description-Translation
           path: packages/X-SIGN.ipa
           if-no-files-found: error
