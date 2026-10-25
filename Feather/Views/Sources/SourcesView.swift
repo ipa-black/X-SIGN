@@ -1071,7 +1071,6 @@ struct AppStore2026DetailView: View {
 	let item: AppStoreAppItem
 	@State private var appleMetadata: AppleStoreRichMetadata? = nil
 	@State private var isLoadingMetadata = true
-	@State private var isDescriptionExpanded = false
 	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
 	private var accentColor: Color {
@@ -1265,28 +1264,7 @@ struct AppStore2026DetailView: View {
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
 				
-				VStack(alignment: .leading, spacing: 10) {
-					Text("الوصف")
-						.font(.system(size: 22, weight: .bold))
-						.foregroundStyle(.white)
-					
-					Text(displayDescription)
-						.font(.system(size: 15))
-						.foregroundStyle(.white.opacity(0.88))
-						.lineSpacing(5)
-						.lineLimit(isDescriptionExpanded ? nil : 6)
-					
-					Button {
-						withAnimation(.snappy) {
-							isDescriptionExpanded.toggle()
-						}
-					} label: {
-						Text(isDescriptionExpanded ? "عرض أقل" : "المزيد")
-							.font(.subheadline.weight(.bold))
-							.foregroundStyle(accentColor)
-					}
-					.buttonStyle(.plain)
-				}
+				XSignTranslatableDescription(text: displayDescription, accentColor: accentColor)
 				.padding(.horizontal, 18)
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
