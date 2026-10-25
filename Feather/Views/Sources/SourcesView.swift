@@ -8,6 +8,8 @@
 import CoreData
 import AltSourceKit
 import SwiftUI
+import NaturalLanguage
+import Translation
 import NimbleViews
 import NukeUI
 import Nuke
@@ -72,7 +74,7 @@ actor AppStoreLiveMetadataBridge {
 	
 	private nonisolated static var diskCacheDir: URL {
 		let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-			.appendingPathComponent("XSignAppleMetadataCache_v3", isDirectory: true)
+			.appendingPathComponent("XSignAppleMetadataCache_SA_v4", isDirectory: true)
 		try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 		return url
 	}
@@ -134,26 +136,24 @@ actor AppStoreLiveMetadataBridge {
 			return await existingTask.value
 		}
 		
-		let task = Task<AppleStoreRichMetadata?, Never> {
-			if let bID = bundleID, bID.contains("."), !bID.hasPrefix("games.") {
-				if let found = await Self.queryiTunes(urlString: "https://itunes.apple.com/lookup?bundleId=\(bID)&country=US") {
-					return found
-				}
-			}
-			
-			let cleanedName = Self.cleanSearchTitle(appName)
-			if let encoded = cleanedName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-				if let foundAR = await Self.queryiTunes(urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=SA"),
-				   !foundAR.screenshots.isEmpty {
-					return foundAR
-				}
-				if let foundUS = await Self.queryiTunes(urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=US") {
-					return foundUS
-				}
-			}
-			return nil
-		}
-		
+        let task = Task<AppleStoreRichMetadata?, Never> {
+            if let bID = bundleID, bID.contains("."), !bID.hasPrefix("games."),
+               let encodedID = bID.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+               let found = await Self.queryiTunes(
+                   urlString: "https://itunes.apple.com/lookup?bundleId=\(encodedID)&country=SA"
+               ) {
+                return found
+            }
+
+            let cleanedName = Self.cleanSearchTitle(appName)
+            if let encoded = cleanedName.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+                return await Self.queryiTunes(
+                    urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=SA"
+                )
+            }
+            return nil
+        }
+        
 		inFlightTasks[cacheKey] = task
 		let result = await task.value
 		inFlightTasks.removeValue(forKey: cacheKey)
@@ -172,7 +172,10 @@ actor AppStoreLiveMetadataBridge {
 		do {
 			var request = URLRequest(url: url)
 			request.timeoutInterval = 8
-			let (data, _) = try await URLSession.shared.data(for: request)
+			request.setValue("ar-SA,ar;q=0.9", forHTTPHeaderField: "Accept-Language")
+			let (data, response) = try await URLSession.shared.data(for: request)
+			guard let http = response as? HTTPURLResponse,
+			      (200..<300).contains(http.statusCode) else { return nil }
 			guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
 				  let results = json["results"] as? [[String: Any]],
 				  let first = results.first else {
@@ -1071,7 +1074,6 @@ struct AppStore2026DetailView: View {
 	let item: AppStoreAppItem
 	@State private var appleMetadata: AppleStoreRichMetadata? = nil
 	@State private var isLoadingMetadata = true
-	@State private var isDescriptionExpanded = false
 	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
 	private var accentColor: Color {
@@ -1079,8 +1081,10 @@ struct AppStore2026DetailView: View {
 	}
 	
 	private var displayScreenshots: [URL] {
-		if !item.screenshots.isEmpty { return item.screenshots }
-		return appleMetadata?.screenshots ?? []
+		if let screenshots = appleMetadata?.screenshots, !screenshots.isEmpty {
+			return screenshots
+		}
+		return item.screenshots
 	}
 	
 	private var displayDescription: String {
@@ -1091,7 +1095,7 @@ struct AppStore2026DetailView: View {
 		   !AppStoreBilingualEngine.isInternalSourceNote(original) {
 			return original
 		}
-		return "\(item.app.currentName) — \(item.arabicSubtitle).\nتم تجهيز هذه النسخة لتعمل بأقصى سرعة واستقرار مع دعم التوقيع والتثبيت اللحظي المباشر."
+		return "الوصف غير متاح لهذا التطبيق حاليًا."
 	}
 	
 	private var displayReleaseNotes: String {
@@ -1102,18 +1106,18 @@ struct AppStore2026DetailView: View {
 		   !AppStoreBilingualEngine.isInternalSourceNote(versionDesc) {
 			return versionDesc
 		}
-		return "تحسينات شاملة في الأداء والاستقرار ودعم أحدث إصدارات iOS."
+		return "ملاحظات هذا الإصدار غير متاحة حاليًا."
 	}
 	
 	private var displayDeveloper: String {
 		if let seller = appleMetadata?.sellerName, !seller.isEmpty {
 			return seller
 		}
-		return "IPA BLACK Official"
+		return "غير متاح"
 	}
 	
 	private var formattedSize: String {
-		let bytes: Int64 = appleMetadata?.fileSizeBytes ?? 92_400_000
+		guard let bytes = appleMetadata?.fileSizeBytes, bytes > 0 else { return "غير متاح" }
 		let formatter = ByteCountFormatter()
 		formatter.allowedUnits = [.useMB, .useGB]
 		formatter.countStyle = .file
@@ -1122,19 +1126,19 @@ struct AppStore2026DetailView: View {
 	
 	var body: some View {
 		ScrollView(.vertical, showsIndicators: false) {
-			VStack(alignment: .leading, spacing: 22) {
+			VStack(alignment: .leading, spacing: 24) {
 				HStack(alignment: .top, spacing: 16) {
 					AppStoreIconView(
 						url: item.app.iconURL,
 						bundleID: item.app.id,
 						appName: item.app.currentName,
-						size: 108
+						size: 112
 					)
-					.shadow(color: .black.opacity(0.4), radius: 12, x: 0, y: 6)
+					.shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 4)
 					
 					VStack(alignment: .leading, spacing: 6) {
 						Text(item.app.currentName)
-							.font(.system(size: 22, weight: .bold))
+							.font(.title2.bold())
 							.foregroundStyle(.white)
 							.lineLimit(2)
 						
@@ -1160,24 +1164,24 @@ struct AppStore2026DetailView: View {
 					HStack(spacing: 0) {
 						AppStoreStatBadge(
 							topTitle: "التقييمات",
-							mainValue: String(format: "%.1f", appleMetadata?.rating ?? 4.9),
-							bottomText: "★★★★★"
+							mainValue: appleMetadata?.rating.map { String(format: "%.1f", $0) } ?? "—",
+							bottomText: appleMetadata?.rating == nil ? "غير متاح" : "★★★★★"
 						)
 						
 						Divider().frame(height: 36).background(Color.white.opacity(0.12))
 						
 						AppStoreStatBadge(
 							topTitle: "العمر",
-							mainValue: appleMetadata?.contentRating ?? "+12",
+							mainValue: appleMetadata?.contentRating ?? "—",
 							bottomText: "سنة"
 						)
 						
 						Divider().frame(height: 36).background(Color.white.opacity(0.12))
 						
 						AppStoreStatBadge(
-							topTitle: "المرتبة",
-							mainValue: "#1",
-							bottomText: item.category.rawValue
+							topTitle: "الفئة",
+							mainValue: item.category.rawValue,
+							bottomText: "التصنيف"
 						)
 						
 						Divider().frame(height: 36).background(Color.white.opacity(0.12))
@@ -1195,7 +1199,7 @@ struct AppStore2026DetailView: View {
 				
 				VStack(alignment: .leading, spacing: 14) {
 					Text("معاينة")
-						.font(.system(size: 22, weight: .bold))
+						.font(.title2.bold())
 						.foregroundStyle(.white)
 						.padding(.horizontal, 18)
 					
@@ -1207,7 +1211,7 @@ struct AppStore2026DetailView: View {
 										if let image = state.image {
 											image
 												.resizable()
-												.scaledToFill()
+												.scaledToFit()
 										} else {
 											RoundedRectangle(cornerRadius: 20, style: .continuous)
 												.fill(Color(white: 0.14))
@@ -1215,7 +1219,8 @@ struct AppStore2026DetailView: View {
 										}
 									}
 									.processors([.resize(size: CGSize(width: 460, height: 920))])
-									.frame(width: 225, height: 460)
+									.frame(width: min(UIScreen.main.bounds.width * 0.62, 280), height: 440)
+                                    .background(Color(white: 0.08))
 									.clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 									.overlay(
 										RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -1231,7 +1236,7 @@ struct AppStore2026DetailView: View {
 								ForEach(0..<3, id: \.self) { _ in
 									RoundedRectangle(cornerRadius: 20, style: .continuous)
 										.fill(Color(white: 0.12))
-										.frame(width: 215, height: 430)
+										.frame(width: min(UIScreen.main.bounds.width * 0.62, 280), height: 440)
 										.overlay {
 											ProgressView().tint(accentColor)
 										}
@@ -1247,10 +1252,10 @@ struct AppStore2026DetailView: View {
 				VStack(alignment: .leading, spacing: 10) {
 					HStack {
 						Text("ما الجديد")
-							.font(.system(size: 22, weight: .bold))
+							.font(.title2.bold())
 							.foregroundStyle(.white)
 						Spacer()
-						Text("الإصدار \(item.app.currentVersion ?? "1.0")")
+						Text("الإصدار \(item.app.currentVersion ?? "—")")
 							.font(.subheadline)
 							.foregroundStyle(.secondary)
 					}
@@ -1265,47 +1270,26 @@ struct AppStore2026DetailView: View {
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
 				
-				VStack(alignment: .leading, spacing: 10) {
-					Text("الوصف")
-						.font(.system(size: 22, weight: .bold))
-						.foregroundStyle(.white)
-					
-					Text(displayDescription)
-						.font(.system(size: 15))
-						.foregroundStyle(.white.opacity(0.88))
-						.lineSpacing(5)
-						.lineLimit(isDescriptionExpanded ? nil : 6)
-					
-					Button {
-						withAnimation(.snappy) {
-							isDescriptionExpanded.toggle()
-						}
-					} label: {
-						Text(isDescriptionExpanded ? "عرض أقل" : "المزيد")
-							.font(.subheadline.weight(.bold))
-							.foregroundStyle(accentColor)
-					}
-					.buttonStyle(.plain)
-				}
+				XSignTranslatableDescription(text: displayDescription, accentColor: accentColor)
 				.padding(.horizontal, 18)
 				
 				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
 				
 				VStack(alignment: .leading, spacing: 14) {
 					Text("المعلومات")
-						.font(.system(size: 22, weight: .bold))
+						.font(.title2.bold())
 						.foregroundStyle(.white)
 					
 					AppStoreInfoRow(label: "المصدر", value: "IPA BLACK")
 					AppStoreInfoRow(label: "المطور", value: displayDeveloper)
 					AppStoreInfoRow(label: "الحجم", value: formattedSize)
 					AppStoreInfoRow(label: "الفئة", value: item.category.rawValue)
-					AppStoreInfoRow(label: "التوافق", value: "يعمل على هذا الـ iPhone")
-					AppStoreInfoRow(label: "الإصدار", value: item.app.currentVersion ?? "1.0")
-					AppStoreInfoRow(label: "التصنيف العمري", value: appleMetadata?.contentRating ?? "+12")
+					AppStoreInfoRow(label: "التوافق", value: "تحقق من متطلبات التطبيق")
+					AppStoreInfoRow(label: "الإصدار", value: item.app.currentVersion ?? "—")
+					AppStoreInfoRow(label: "التصنيف العمري", value: appleMetadata?.contentRating ?? "—")
 				}
 				.padding(.horizontal, 18)
-				.padding(.bottom, 100)
+				.padding(.bottom, 36)
 			}
 		}
 		.background(Color.black.ignoresSafeArea())
@@ -2014,35 +1998,21 @@ struct AppStore2026TopHeader: View {
 }
 
 struct AppStoreAccountAppIconButton: View {
-	let action: () -> Void
-	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
-	
-	var body: some View {
-		Button(action: action) {
-			ZStack {
-				LinearGradient(
-					colors: [
-						Color(hex: userTintHex),
-						Color(red: 0.00, green: 0.14, blue: 0.36)
-					],
-					startPoint: .topLeading,
-					endPoint: .bottomTrailing
-				)
-				
-				Text("X")
-					.font(.system(size: 19, weight: .black, design: .rounded))
-					.foregroundStyle(.white)
-					.shadow(color: .black.opacity(0.4), radius: 2, x: 0, y: 1)
-			}
-			.frame(width: 38, height: 38)
-			.clipShape(Circle())
-			.overlay(
-				Circle()
-					.stroke(Color.white.opacity(0.28), lineWidth: 1.1)
-			)
-		}
-		.buttonStyle(.plain)
-	}
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            FRAppIconView(size: 38)
+                .frame(width: 38, height: 38)
+                .clipShape(Circle())
+                .overlay {
+                    Circle()
+                        .stroke(Color.white.opacity(0.28), lineWidth: 1.1)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("الإعدادات")
+    }
 }
 
 // MARK: - Authentic Apple App Store Today Cards
@@ -2093,7 +2063,7 @@ struct TodayLiveEventHeroCard: View {
 							)
 						)
 						.overlay {
-							let displayBanner = bannerImageURL ?? liveScreenshots.first
+							let displayBanner = liveScreenshots.first ?? bannerImageURL
 							if let bannerURL = displayBanner {
 								LazyImage(url: bannerURL) { state in
 									if let image = state.image {
@@ -2202,7 +2172,7 @@ struct TodayLiveEventHeroCard: View {
 					.stroke(Color.white.opacity(0.10), lineWidth: 0.7)
 			)
 			.task {
-				if bannerImageURL == nil && item.screenshots.isEmpty {
+				if liveScreenshots.isEmpty {
 					if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 						bundleID: item.app.id,
 						appName: item.app.currentName
@@ -2434,7 +2404,7 @@ struct TodayFullArtworkDockCard: View {
 					)
 				)
 				.overlay {
-					let displayImg = item.screenshots.first ?? liveScreenshots.first
+					let displayImg = liveScreenshots.first ?? item.screenshots.first
 					if let firstScreen = displayImg {
 						LazyImage(url: firstScreen) { state in
 							if let image = state.image {
@@ -2532,7 +2502,7 @@ struct TodayFullArtworkDockCard: View {
 				.stroke(Color.white.opacity(0.10), lineWidth: 0.6)
 		)
 		.task {
-			if item.screenshots.isEmpty {
+			if liveScreenshots.isEmpty {
 				if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 					bundleID: item.app.id,
 					appName: item.app.currentName
@@ -2571,9 +2541,7 @@ struct AppStore2026SettingsPopup: View {
 										endPoint: .bottomTrailing
 									)
 								)
-							Text("X")
-								.font(.system(size: 24, weight: .black, design: .rounded))
-								.foregroundStyle(.white)
+							FRAppIconView(size: 48)
 						}
 						.frame(width: 48, height: 48)
 						
@@ -3010,7 +2978,7 @@ struct AppStore2026SearchResultCard: View {
 		VStack(alignment: .leading, spacing: 14) {
 			AppStore2026AppRow(item: item)
 			
-			let displayScreenshots = item.screenshots.isEmpty ? liveScreenshots : item.screenshots
+			let displayScreenshots = liveScreenshots.isEmpty ? item.screenshots : liveScreenshots
 			if !displayScreenshots.isEmpty {
 				ScrollView(.horizontal, showsIndicators: false) {
 					HStack(spacing: 10) {
@@ -3039,7 +3007,7 @@ struct AppStore2026SearchResultCard: View {
 				.fill(AppStoreTheme.cardSurface)
 		)
 		.task {
-			if item.screenshots.isEmpty {
+			if liveScreenshots.isEmpty {
 				if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 					bundleID: item.app.id,
 					appName: item.app.currentName
@@ -3155,3 +3123,211 @@ struct AppStore2026EmptyState: View {
 		)
 	}
 }
+
+// MARK: - XSign Inline Description Translation
+struct XSignTranslatableDescription: View {
+    let text: String
+    let accentColor: Color
+
+    var body: some View {
+        Group {
+            if #available(iOS 18.0, *) {
+                XSignInlineTranslation(text: text, accentColor: accentColor)
+                    .id(text)
+            } else {
+                XSignLegacyTranslation(text: text, accentColor: accentColor)
+                    .id(text)
+            }
+        }
+    }
+}
+
+private struct XSignDescriptionContent: View {
+    let text: String
+    let translated: String?
+    let accentColor: Color
+    let isBusy: Bool
+    let canTranslate: Bool
+    let translate: () -> Void
+    let restore: () -> Void
+    @State private var expanded = false
+
+    private var visibleText: String { translated ?? text }
+
+    private var isArabic: Bool {
+        NLLanguageRecognizer.dominantLanguage(for: visibleText) == .arabic
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("الوصف").font(.title2.bold())
+                    Spacer(minLength: 12)
+                    translationButton
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("الوصف").font(.title2.bold())
+                    translationButton
+                }
+            }
+
+            Text(verbatim: visibleText)
+                .font(.body)
+                .foregroundStyle(.white.opacity(0.88))
+                .lineSpacing(5)
+                .lineLimit(expanded ? nil : 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .environment(\.layoutDirection, isArabic ? .rightToLeft : .leftToRight)
+                .textSelection(.enabled)
+
+            Button(expanded ? "عرض أقل" : "المزيد") {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expanded.toggle()
+                }
+            }
+            .font(.subheadline.bold())
+            .foregroundStyle(accentColor)
+        }
+        .buttonStyle(.plain)
+        .onChange(of: translated) { _ in
+            expanded = true
+        }
+    }
+
+    @ViewBuilder private var translationButton: some View {
+        if translated != nil {
+            Button("عرض الأصل", action: restore)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accentColor)
+        } else if canTranslate && NLLanguageRecognizer.dominantLanguage(for: text) != .arabic {
+            Button(action: translate) {
+                HStack(spacing: 6) {
+                    if isBusy {
+                        ProgressView().tint(accentColor)
+                    }
+                    Label(
+                        isBusy ? "جارٍ الترجمة…" : "ترجمة للعربية",
+                        systemImage: "translate"
+                    )
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accentColor)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(accentColor.opacity(0.12), in: Capsule())
+            }
+            .disabled(
+                isBusy ||
+                text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            )
+        }
+    }
+}
+
+@available(iOS 18.0, *)
+private struct XSignInlineTranslation: View {
+    let text: String
+    let accentColor: Color
+
+    @State private var configuration: TranslationSession.Configuration?
+    @State private var translated: String?
+    @State private var isBusy = false
+    @State private var showError = false
+
+    var body: some View {
+        XSignDescriptionContent(
+            text: text,
+            translated: translated,
+            accentColor: accentColor,
+            isBusy: isBusy,
+            canTranslate: true,
+            translate: {
+                isBusy = true
+                if configuration == nil {
+                    configuration = TranslationSession.Configuration(
+                        source: nil,
+                        target: Locale.Language(identifier: "ar")
+                    )
+                } else {
+                    configuration?.invalidate()
+                }
+            },
+            restore: {
+                translated = nil
+            }
+        )
+        .translationTask(configuration) { session in
+            do {
+                let response = try await session.translate(text)
+                try Task.checkCancellation()
+
+                await MainActor.run {
+                    translated = response.targetText
+                    isBusy = false
+                }
+            } catch {
+                let cancelled = Task.isCancelled || error is CancellationError
+                await MainActor.run {
+                    isBusy = false
+                    if !cancelled {
+                        showError = true
+                    }
+                }
+            }
+        }
+        .alert("تعذّرت الترجمة", isPresented: $showError) {
+            Button("حسنًا", role: .cancel) {}
+        } message: {
+            Text("تأكد من توفر لغات الترجمة واتصال الإنترنت عند تنزيلها، ثم أعد المحاولة.")
+        }
+    }
+}
+
+private struct XSignLegacyTranslation: View {
+    let text: String
+    let accentColor: Color
+
+    @State private var presented = false
+    @State private var translated: String?
+
+    private var content: some View {
+        XSignDescriptionContent(
+            text: text,
+            translated: translated,
+            accentColor: accentColor,
+            isBusy: false,
+            canTranslate: supportsTranslation,
+            translate: {
+                presented = true
+            },
+            restore: {
+                translated = nil
+            }
+        )
+    }
+
+    private var supportsTranslation: Bool {
+        if #available(iOS 17.4, *) {
+            return true
+        }
+        return false
+    }
+
+    var body: some View {
+        Group {
+            if #available(iOS 17.4, *) {
+                content.translationPresentation(
+                    isPresented: $presented,
+                    text: text
+                ) { result in
+                    translated = result
+                    presented = false
+                }
+            } else {
+                content
+            }
+        }
+    }
+}
+// MARK: - End XSign Inline Description Translation
