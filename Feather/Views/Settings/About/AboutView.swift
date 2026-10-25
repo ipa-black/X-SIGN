@@ -12,21 +12,26 @@ import NimbleJSON
 // MARK: - Extension: Model
 extension AboutView {
 	struct CreditsModel: Codable, Hashable {
-		let name: String?
-		let desc: String?
-		let github: String
+		let name: String
+		let desc: String
+		let imageUrl: String
 	}
 }
 
 // MARK: - View
 struct AboutView: View {
 	@State private var _credits: [CreditsModel] = [
-		.init(name: "C", desc: "Developer", github: "claration"),
-		.init(name: "Asami", desc: "Developer", github: "Nyasami"),
-		.init(name: "Lakhan Lothiyi", desc: "AltStore Repositories", github: "llsc12"),
+		.init(
+			name: "IPA BLACK",
+			desc: "مؤسس xsign",
+			imageUrl: "https://up6.cc/2026/10/179293542479681.jpeg"
+		),
+		.init(
+			name: "حـور",
+			desc: "مصممة الهوية البصرية",
+			imageUrl: "https://up6.cc/2026/10/179293542483323.jpeg"
+		)
 	]
-	
-	let pngURL = URL(string: "https://sponsors.claration.dev/sponsors.png")!
 	
 	// MARK: Body
 	var body: some View {
@@ -35,14 +40,14 @@ struct AboutView: View {
 				VStack {
 					FRAppIconView(size: 72)
 					
-					Text(Bundle.main.exec)
+					Text("Xsign")
 						.font(.largeTitle)
 						.bold()
 						.foregroundStyle(Color.accentColor)
 					
 					HStack(spacing: 4) {
 						Text(.localized("Version"))
-						Text(Bundle.main.version)
+						Text("1.0")
 					}
 					.font(.footnote)
 					.foregroundStyle(.secondary)
@@ -52,40 +57,10 @@ struct AboutView: View {
 			.listRowBackground(EmptyView())
 			
 			NBSection(.localized("Credits")) {
-				ForEach(_credits, id: \.github) { credit in
-					_credit(name: credit.name, desc: credit.desc, github: credit.github)
+				ForEach(_credits, id: \.name) { credit in
+					_credit(name: credit.name, desc: credit.desc, imageUrl: credit.imageUrl)
 				}
 				.transition(.slide)
-			}
-			
-			NBSection(.localized("Sponsors")) {
-				Text(.localized("💜 This couldn't of been done without my sponsors!"))
-					.foregroundStyle(.secondary)
-					.padding(.vertical, 2)
-				AsyncImage(url: pngURL) { phase in
-					switch phase {
-					case .empty:
-						ProgressView()
-							.frame(maxWidth: .infinity)
-							.frame(height: 120)
-					case .success(let image):
-						image
-							.resizable()
-							.scaledToFit()
-							.frame(maxWidth: .infinity)
-							.listRowInsets(EdgeInsets())
-					case .failure:
-						Image(systemName: "photo")
-							.resizable()
-							.scaledToFit()
-							.frame(maxWidth: .infinity)
-							.foregroundColor(.gray)
-							.frame(height: 120)
-						
-					@unknown default:
-						EmptyView()
-					}
-				}
 			}
 		}
 	}
@@ -95,24 +70,19 @@ struct AboutView: View {
 extension AboutView {
 	@ViewBuilder
 	private func _credit(
-		name: String?,
-		desc: String?,
-		github: String
+		name: String,
+		desc: String,
+		imageUrl: String
 	) -> some View {
-		Button {
-			UIApplication.open("https://github.com/\(github)")
-		} label: {
-			HStack {
+		HStack {
+			if let url = URL(string: imageUrl) {
 				FRIconCellView(
-					title: name ?? github,
-					subtitle: desc ?? "",
-					iconUrl: URL(string: "https://github.com/\(github).png")!,
+					title: name,
+					subtitle: desc,
+					iconUrl: url,
 					size: 45,
 					isCircle: true
 				)
-				
-				Image(systemName: "arrow.up.right")
-					.foregroundColor(.secondary.opacity(0.65))
 			}
 		}
 	}
