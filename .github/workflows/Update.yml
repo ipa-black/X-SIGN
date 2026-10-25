@@ -1,0 +1,221 @@
+name: X-SIGN App Icon and Saudi Images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xsign-arabic-icons-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update-and-build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply reviewed changes
+        shell: bash
+        run: |
+          python3 - <<'XSIGN_PY'
+          from pathlib import Path
+          import hashlib
+
+          path = Path('Feather/Views/Sources/SourcesView.swift')
+          raw = path.read_bytes()
+          blob = hashlib.sha1(
+              b'blob ' + str(len(raw)).encode() + b'\0' + raw
+          ).hexdigest()
+
+          expected = 'c790f78ad3bcc528591a80c729f01e987b3be226'
+
+          if blob != expected:
+              raise SystemExit(
+                  'SourcesView.swift changed or this patch was already applied. '
+                  'Review the current file before applying again.'
+              )
+
+          text = raw.decode('utf-8')
+
+          def replace_once(old, new, expected_count=1):
+              global text
+              if text.count(old) != expected_count:
+                  raise SystemExit(
+                      'Unexpected source structure; no file was written: '
+                      + old[:90]
+                  )
+              text = text.replace(old, new)
+
+          start = text.index(
+              'struct AppStoreAccountAppIconButton: View {'
+          )
+          end = text.index(
+              '// MARK: - Authentic Apple App Store Today Cards',
+              start
+          )
+
+          text = text[:start] + '''struct AppStoreAccountAppIconButton: View {
+              let action: () -> Void
+
+              var body: some View {
+                  Button(action: action) {
+                      FRAppIconView(size: 38)
+                          .frame(width: 38, height: 38)
+                          .clipShape(Circle())
+                          .overlay {
+                              Circle()
+                                  .stroke(
+                                      Color.white.opacity(0.28),
+                                      lineWidth: 1.1
+                                  )
+                          }
+                  }
+                  .buttonStyle(.plain)
+                  .accessibilityLabel("الإعدادات")
+              }
+          }
+
+          ''' + text[end:]
+
+          replace_once(
+              '''Text("X")
+          \t\t\t\t\t\t\t\t.font(.system(size: 24, weight: .black, design: .rounded))
+          \t\t\t\t\t\t\t\t.foregroundStyle(.white)''',
+              'FRAppIconView(size: 48)'
+          )
+
+          replace_once(
+              'XSignAppleMetadataCache_v3',
+              'XSignAppleMetadataCache_SA_v4'
+          )
+
+          start = text.index(
+              '\t\tlet task = Task<AppleStoreRichMetadata?, Never> {'
+          )
+          end = text.index(
+              '\n\t\tinFlightTasks[cacheKey] = task',
+              start
+          )
+
+          text = text[:start] + r'''        let task = Task<AppleStoreRichMetadata?, Never> {
+                      if let bID = bundleID, bID.contains("."), !bID.hasPrefix("games."),
+                         let encodedID = bID.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+                         let found = await Self.queryiTunes(
+                             urlString: "https://itunes.apple.com/lookup?bundleId=\(encodedID)&country=SA"
+                         ) {
+                          return found
+                      }
+
+                      let cleanedName = Self.cleanSearchTitle(appName)
+                      if let encoded = cleanedName.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+                          return await Self.queryiTunes(
+                              urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=SA"
+                          )
+                      }
+                      return nil
+                  }
+                  ''' + text[end:]
+
+          replace_once(
+              '''request.timeoutInterval = 8
+          \t\t\tlet (data, _) = try await URLSession.shared.data(for: request)''',
+              '''request.timeoutInterval = 8
+          \t\t\trequest.setValue("ar-SA,ar;q=0.9", forHTTPHeaderField: "Accept-Language")
+          \t\t\tlet (data, response) = try await URLSession.shared.data(for: request)
+          \t\t\tguard let http = response as? HTTPURLResponse,
+          \t\t\t      (200..<300).contains(http.statusCode) else { return nil }'''
+          )
+
+          replace_once(
+              '''private var displayScreenshots: [URL] {
+          \t\tif !item.screenshots.isEmpty { return item.screenshots }
+          \t\treturn appleMetadata?.screenshots ?? []
+          \t}''',
+              '''private var displayScreenshots: [URL] {
+          \t\tif let screenshots = appleMetadata?.screenshots, !screenshots.isEmpty {
+          \t\t\treturn screenshots
+          \t\t}
+          \t\treturn item.screenshots
+          \t}'''
+          )
+
+          replace_once(
+              'let displayBanner = bannerImageURL ?? liveScreenshots.first',
+              'let displayBanner = liveScreenshots.first ?? bannerImageURL'
+          )
+
+          replace_once(
+              'if bannerImageURL == nil && item.screenshots.isEmpty {',
+              'if liveScreenshots.isEmpty {'
+          )
+
+          replace_once(
+              'let displayImg = item.screenshots.first ?? liveScreenshots.first',
+              'let displayImg = liveScreenshots.first ?? item.screenshots.first'
+          )
+
+          replace_once(
+              'if item.screenshots.isEmpty {',
+              'if liveScreenshots.isEmpty {',
+              2
+          )
+
+          replace_once(
+              'let displayScreenshots = item.screenshots.isEmpty ? liveScreenshots : item.screenshots',
+              'let displayScreenshots = liveScreenshots.isEmpty ? item.screenshots : liveScreenshots'
+          )
+
+          path.write_bytes(text.encode('utf-8'))
+          print('Applied: native app icons and Saudi App Store screenshots.')
+          XSIGN_PY
+
+      - name: Build IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -d /Applications/Xcode_26.3.0.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.3.0.app
+          elif [ -d /Applications/Xcode_26.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.app
+          fi
+
+          xcodebuild -version
+          make
+          test -s packages/X-SIGN.ipa
+
+      - name: Save changes to a new branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPDATE_BRANCH="xsign-arabic-icons-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          git switch -c "$UPDATE_BRANCH"
+          git add -- Feather/Views/Sources/SourcesView.swift
+
+          git \
+            -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m 'Use native app icons and Saudi App Store screenshots'
+
+          git push origin "HEAD:refs/heads/$UPDATE_BRANCH"
+
+          echo "Updated branch: $UPDATE_BRANCH" >> "$GITHUB_STEP_SUMMARY"
+          echo "Merge this branch into your working branch to retain the changes." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: X-SIGN-Arabic-Icons
+          path: packages/X-SIGN.ipa
+          if-no-files-found: error
