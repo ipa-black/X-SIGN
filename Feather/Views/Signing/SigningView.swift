@@ -9,6 +9,58 @@ import SwiftUI
 import PhotosUI
 import NimbleViews
 
+// MARK: - Custom X Logo Shape
+struct XSignLogoShape: Shape {
+	func path(in rect: CGRect) -> Path {
+		var path = Path()
+		let w = rect.width
+		let h = rect.height
+		
+		// الجزء الأيسر العلوي الممتد للشوكة العلوية والسفلية
+		path.move(to: CGPoint(x: w * 0.67, y: h * 0.04))
+		path.addLine(to: CGPoint(x: w * 0.47, y: h * 0.36))
+		path.addLine(to: CGPoint(x: w * 0.38, y: h * 0.22))
+		path.addLine(to: CGPoint(x: w * 0.18, y: h * 0.22))
+		path.addLine(to: CGPoint(x: w * 0.38, y: h * 0.54))
+		path.addLine(to: CGPoint(x: w * 0.10, y: h * 0.96))
+		path.addLine(to: CGPoint(x: w * 0.44, y: h * 0.54))
+		path.addLine(to: CGPoint(x: w * 0.28, y: h * 0.28))
+		path.addLine(to: CGPoint(x: w * 0.35, y: h * 0.28))
+		path.addLine(to: CGPoint(x: w * 0.47, y: h * 0.46))
+		path.closeSubpath()
+		
+		// الجزء الأيمن السفلي الممتد للشوكة العلوية والسفلية
+		path.move(to: CGPoint(x: w * 0.25, y: h * 0.96))
+		path.addLine(to: CGPoint(x: w * 0.49, y: h * 0.63))
+		path.addLine(to: CGPoint(x: w * 0.57, y: h * 0.76))
+		path.addLine(to: CGPoint(x: w * 0.77, y: h * 0.76))
+		path.addLine(to: CGPoint(x: w * 0.59, y: h * 0.47))
+		path.addLine(to: CGPoint(x: w * 0.86, y: h * 0.04))
+		path.addLine(to: CGPoint(x: w * 0.53, y: h * 0.47))
+		path.addLine(to: CGPoint(x: w * 0.68, y: h * 0.70))
+		path.addLine(to: CGPoint(x: w * 0.60, y: h * 0.70))
+		path.addLine(to: CGPoint(x: w * 0.49, y: h * 0.53))
+		path.closeSubpath()
+		
+		return path
+	}
+}
+
+struct XSignHeaderLogo: View {
+	var body: some View {
+		XSignLogoShape()
+			.fill(
+				LinearGradient(
+					colors: [.primary, .accentColor],
+					startPoint: .topLeading,
+					endPoint: .bottomTrailing
+				)
+			)
+			.frame(width: 36, height: 36)
+			.shadow(color: Color.accentColor.opacity(0.25), radius: 4, x: 0, y: 2)
+	}
+}
+
 // MARK: - View
 struct SigningView: View {
 	@Environment(\.dismiss) var dismiss
@@ -80,10 +132,7 @@ struct SigningView: View {
 			.toolbar {
 				NBToolbarButton(role: .dismiss)
 				ToolbarItem(placement: .principal) {
-					Image("Glyph")
-						.resizable()
-						.scaledToFit()
-						.frame(height: 38)
+					XSignHeaderLogo()
 				}
 				NBToolbarButton(
 					.localized("Reset"),
@@ -179,6 +228,9 @@ extension SigningView {
 					bindingValue: $_temporaryOptions.appIdentifier
 				)
 			}
+			
+			_cloneRow(for: app)
+			
 			_infoCell(.localized("Version"), desc: _temporaryOptions.appVersion ?? app.version) {
 				SigningPropertiesView(
 					title: .localized("Version"),
@@ -187,6 +239,79 @@ extension SigningView {
 				)
 			}
 		}
+	}
+	
+	@ViewBuilder
+	private func _cloneRow(for app: AppInfoPresentable) -> some View {
+		let baseID = app.identifier ?? ""
+		let currentID = _temporaryOptions.appIdentifier ?? baseID
+		let canRemoveClone = currentID.hasSuffix("1") && currentID.count > baseID.count
+		
+		HStack(spacing: 12) {
+			Label {
+				VStack(alignment: .leading, spacing: 2) {
+					Text("الاستنساخ")
+						.font(.body)
+					Text("إضافة أو إزالة (1) من البندل لتكرار التطبيق")
+						.font(.caption2)
+						.foregroundStyle(.secondary)
+				}
+			} icon: {
+				Image(systemName: "plus.square.on.square.fill")
+					.foregroundStyle(Color.accentColor)
+					.font(.system(size: 18, weight: .semibold))
+			}
+			
+			Spacer()
+			
+			HStack(spacing: 0) {
+				// زر الناقص (-) لعكس العملية
+				Button {
+					guard canRemoveClone else { return }
+					UIImpactFeedbackGenerator(style: .light).impactOccurred()
+					withAnimation(.snappy) {
+						var updated = currentID
+						updated.removeLast()
+						_temporaryOptions.appIdentifier = updated
+					}
+				} label: {
+					Image(systemName: "minus")
+						.font(.system(size: 14, weight: .bold))
+						.frame(width: 38, height: 32)
+						.foregroundStyle(canRemoveClone ? Color.primary : Color.secondary.opacity(0.35))
+						.contentShape(Rectangle())
+				}
+				.buttonStyle(.plain)
+				.disabled(!canRemoveClone)
+				
+				Divider()
+					.frame(height: 18)
+				
+				// زر الزائد (+) لإضافة 1 إلى البندل
+				Button {
+					UIImpactFeedbackGenerator(style: .light).impactOccurred()
+					withAnimation(.snappy) {
+						_temporaryOptions.appIdentifier = currentID + "1"
+					}
+				} label: {
+					Image(systemName: "plus")
+						.font(.system(size: 14, weight: .bold))
+						.frame(width: 38, height: 32)
+						.foregroundStyle(Color.accentColor)
+						.contentShape(Rectangle())
+				}
+				.buttonStyle(.plain)
+			}
+			.background(
+				RoundedRectangle(cornerRadius: 9, style: .continuous)
+					.fill(Color(UIColor.secondarySystemFill))
+			)
+			.overlay(
+				RoundedRectangle(cornerRadius: 9, style: .continuous)
+					.strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+			)
+		}
+		.padding(.vertical, 2)
 	}
 	
 	@ViewBuilder
