@@ -72,7 +72,7 @@ actor AppStoreLiveMetadataBridge {
 	
 	private nonisolated static var diskCacheDir: URL {
 		let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-			.appendingPathComponent("XSignAppleMetadataCache_v3", isDirectory: true)
+			.appendingPathComponent("XSignAppleMetadataCache_SA_v4", isDirectory: true)
 		try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 		return url
 	}
@@ -134,26 +134,24 @@ actor AppStoreLiveMetadataBridge {
 			return await existingTask.value
 		}
 		
-		let task = Task<AppleStoreRichMetadata?, Never> {
-			if let bID = bundleID, bID.contains("."), !bID.hasPrefix("games.") {
-				if let found = await Self.queryiTunes(urlString: "https://itunes.apple.com/lookup?bundleId=\(bID)&country=US") {
-					return found
-				}
-			}
-			
-			let cleanedName = Self.cleanSearchTitle(appName)
-			if let encoded = cleanedName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-				if let foundAR = await Self.queryiTunes(urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=SA"),
-				   !foundAR.screenshots.isEmpty {
-					return foundAR
-				}
-				if let foundUS = await Self.queryiTunes(urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=US") {
-					return foundUS
-				}
-			}
-			return nil
-		}
-		
+        let task = Task<AppleStoreRichMetadata?, Never> {
+            if let bID = bundleID, bID.contains("."), !bID.hasPrefix("games."),
+               let encodedID = bID.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+               let found = await Self.queryiTunes(
+                   urlString: "https://itunes.apple.com/lookup?bundleId=\(encodedID)&country=SA"
+               ) {
+                return found
+            }
+
+            let cleanedName = Self.cleanSearchTitle(appName)
+            if let encoded = cleanedName.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+                return await Self.queryiTunes(
+                    urlString: "https://itunes.apple.com/search?term=\(encoded)&entity=software&limit=1&country=SA"
+                )
+            }
+            return nil
+        }
+        
 		inFlightTasks[cacheKey] = task
 		let result = await task.value
 		inFlightTasks.removeValue(forKey: cacheKey)
@@ -172,7 +170,10 @@ actor AppStoreLiveMetadataBridge {
 		do {
 			var request = URLRequest(url: url)
 			request.timeoutInterval = 8
-			let (data, _) = try await URLSession.shared.data(for: request)
+			request.setValue("ar-SA,ar;q=0.9", forHTTPHeaderField: "Accept-Language")
+			let (data, response) = try await URLSession.shared.data(for: request)
+			guard let http = response as? HTTPURLResponse,
+			      (200..<300).contains(http.statusCode) else { return nil }
 			guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
 				  let results = json["results"] as? [[String: Any]],
 				  let first = results.first else {
@@ -1079,8 +1080,10 @@ struct AppStore2026DetailView: View {
 	}
 	
 	private var displayScreenshots: [URL] {
-		if !item.screenshots.isEmpty { return item.screenshots }
-		return appleMetadata?.screenshots ?? []
+		if let screenshots = appleMetadata?.screenshots, !screenshots.isEmpty {
+			return screenshots
+		}
+		return item.screenshots
 	}
 	
 	private var displayDescription: String {
@@ -2014,35 +2017,24 @@ struct AppStore2026TopHeader: View {
 }
 
 struct AppStoreAccountAppIconButton: View {
-	let action: () -> Void
-	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
-	
-	var body: some View {
-		Button(action: action) {
-			ZStack {
-				LinearGradient(
-					colors: [
-						Color(hex: userTintHex),
-						Color(red: 0.00, green: 0.14, blue: 0.36)
-					],
-					startPoint: .topLeading,
-					endPoint: .bottomTrailing
-				)
-				
-				Text("X")
-					.font(.system(size: 19, weight: .black, design: .rounded))
-					.foregroundStyle(.white)
-					.shadow(color: .black.opacity(0.4), radius: 2, x: 0, y: 1)
-			}
-			.frame(width: 38, height: 38)
-			.clipShape(Circle())
-			.overlay(
-				Circle()
-					.stroke(Color.white.opacity(0.28), lineWidth: 1.1)
-			)
-		}
-		.buttonStyle(.plain)
-	}
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            FRAppIconView(size: 38)
+                .frame(width: 38, height: 38)
+                .clipShape(Circle())
+                .overlay {
+                    Circle()
+                        .stroke(
+                            Color.white.opacity(0.28),
+                            lineWidth: 1.1
+                        )
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("الإعدادات")
+    }
 }
 
 // MARK: - Authentic Apple App Store Today Cards
@@ -2093,7 +2085,7 @@ struct TodayLiveEventHeroCard: View {
 							)
 						)
 						.overlay {
-							let displayBanner = bannerImageURL ?? liveScreenshots.first
+							let displayBanner = liveScreenshots.first ?? bannerImageURL
 							if let bannerURL = displayBanner {
 								LazyImage(url: bannerURL) { state in
 									if let image = state.image {
@@ -2202,7 +2194,7 @@ struct TodayLiveEventHeroCard: View {
 					.stroke(Color.white.opacity(0.10), lineWidth: 0.7)
 			)
 			.task {
-				if bannerImageURL == nil && item.screenshots.isEmpty {
+				if liveScreenshots.isEmpty {
 					if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 						bundleID: item.app.id,
 						appName: item.app.currentName
@@ -2434,7 +2426,7 @@ struct TodayFullArtworkDockCard: View {
 					)
 				)
 				.overlay {
-					let displayImg = item.screenshots.first ?? liveScreenshots.first
+					let displayImg = liveScreenshots.first ?? item.screenshots.first
 					if let firstScreen = displayImg {
 						LazyImage(url: firstScreen) { state in
 							if let image = state.image {
@@ -2532,7 +2524,7 @@ struct TodayFullArtworkDockCard: View {
 				.stroke(Color.white.opacity(0.10), lineWidth: 0.6)
 		)
 		.task {
-			if item.screenshots.isEmpty {
+			if liveScreenshots.isEmpty {
 				if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 					bundleID: item.app.id,
 					appName: item.app.currentName
@@ -2571,9 +2563,7 @@ struct AppStore2026SettingsPopup: View {
 										endPoint: .bottomTrailing
 									)
 								)
-							Text("X")
-								.font(.system(size: 24, weight: .black, design: .rounded))
-								.foregroundStyle(.white)
+							FRAppIconView(size: 48)
 						}
 						.frame(width: 48, height: 48)
 						
@@ -3010,7 +3000,7 @@ struct AppStore2026SearchResultCard: View {
 		VStack(alignment: .leading, spacing: 14) {
 			AppStore2026AppRow(item: item)
 			
-			let displayScreenshots = item.screenshots.isEmpty ? liveScreenshots : item.screenshots
+			let displayScreenshots = liveScreenshots.isEmpty ? item.screenshots : liveScreenshots
 			if !displayScreenshots.isEmpty {
 				ScrollView(.horizontal, showsIndicators: false) {
 					HStack(spacing: 10) {
@@ -3039,7 +3029,7 @@ struct AppStore2026SearchResultCard: View {
 				.fill(AppStoreTheme.cardSurface)
 		)
 		.task {
-			if item.screenshots.isEmpty {
+			if liveScreenshots.isEmpty {
 				if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 					bundleID: item.app.id,
 					appName: item.app.currentName
