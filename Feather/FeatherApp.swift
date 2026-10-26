@@ -13,15 +13,16 @@ import OSLog
 import WebKit
 import Combine
 import SystemConfiguration
+import Network
 
-// MARK: - نماذج البيانات المقاومة للأخطاء (Fault-Tolerant Codable)
+// MARK: - نماذج إعدادات اللوحة (Fault-Tolerant Codable)
 struct XSignRemoteRoot: Codable {
 	let tintColor: String?
 	let repo_revision_id: Int?
 	let xsign_config: XSignRemoteConfig?
 }
 
-struct XSignRemoteConfig: Codable {
+struct XSignRemoteConfig: Codable, Equatable {
 	let splash_screen: XSignSplashConfig?
 	let theme: XSignThemeColors?
 	let maintenance: XSignMaintenance?
@@ -30,7 +31,7 @@ struct XSignRemoteConfig: Codable {
 	let app_control: XSignAppControl?
 }
 
-struct XSignSplashConfig: Codable {
+struct XSignSplashConfig: Codable, Equatable {
 	let engine: String?
 	let animation_style: String?
 	let show_sign_feather: Bool?
@@ -38,28 +39,28 @@ struct XSignSplashConfig: Codable {
 	let custom_code: String?
 }
 
-struct XSignThemeColors: Codable {
+struct XSignThemeColors: Codable, Equatable {
 	let app_tint_hex: String?
 	let splash_bg_top_hex: String?
 	let splash_bg_bottom_hex: String?
 	let splash_logo_hex: String?
 }
 
-struct XSignMaintenance: Codable {
+struct XSignMaintenance: Codable, Equatable {
 	let enabled: Bool?
 	let title: String?
 	let message: String?
 	let button_url: String?
 }
 
-struct XSignForceUpdate: Codable {
+struct XSignForceUpdate: Codable, Equatable {
 	let enabled: Bool?
 	let min_version: String?
 	let update_url: String?
 	let message: String?
 }
 
-struct XSignSecurityLocks: Codable {
+struct XSignSecurityLocks: Codable, Equatable {
 	let lock_bundle_rename: Bool?
 	let lock_icon_change: Bool?
 	let lock_dylib_injection: Bool?
@@ -68,13 +69,13 @@ struct XSignSecurityLocks: Codable {
 	let vpn_warning_message: String?
 }
 
-struct XSignCoreSourceItem: Codable {
+struct XSignCoreSourceItem: Codable, Equatable {
 	let name: String
 	let id: String
 	let url: String
 }
 
-struct XSignAppControl: Codable {
+struct XSignAppControl: Codable, Equatable {
 	let top_banner_enabled: Bool?
 	let top_banner_text: String?
 	let top_banner_url: String?
@@ -83,13 +84,14 @@ struct XSignAppControl: Codable {
 	let core_sources: [XSignCoreSourceItem]?
 }
 
-// MARK: - محرك الحماية الصارم (منع التعديل/الحقن + حظر الـ VPN ومراقب الشبكة)
+// MARK: - مدقق الحماية الخفيف (بدون أي Timer يسبب لاك للواجهة)
 @MainActor
 final class XSignSecurityEnforcer: ObservableObject {
 	static let shared = XSignSecurityEnforcer()
 	
-	private let locksStorageKey = "xsign.persistedSecurityLocks_v1"
-	private var monitorTimer: Timer?
+	private let locksStorageKey = "xsign.persistedSecurityLocks_v3"
+	private let pathMonitor = NWPathMonitor()
+	private let monitorQueue = DispatchQueue(label: "com.ipablack.xsign.netguard", qos: .utility)
 	
 	@Published var locks: XSignSecurityLocks = XSignSecurityLocks(
 		lock_bundle_rename: true,
@@ -108,12 +110,14 @@ final class XSignSecurityEnforcer: ObservableObject {
 			self.locks = saved
 		}
 		evaluateNetworkSecurity()
-		startContinuousNetworkGuard()
+		startEventDrivenNetworkMonitor()
 	}
 	
 	func updateLocks(_ newLocks: XSignSecurityLocks?) {
 		guard let newLocks = newLocks else { return }
-		self.locks = newLocks
+		if self.locks != newLocks {
+			self.locks = newLocks
+		}
 		self.didCompleteOnlineHandshake = true
 		if let encoded = try? JSONEncoder().encode(newLocks) {
 			UserDefaults.standard.set(encoded, forKey: locksStorageKey)
@@ -121,24 +125,31 @@ final class XSignSecurityEnforcer: ObservableObject {
 		evaluateNetworkSecurity()
 	}
 	
-	// مراقبة مستمرة كل ثانيتين لكشف تشغيل VPN أو Charles/Proxyman/MITM أثناء التحميل
-	private func startContinuousNetworkGuard() {
-		monitorTimer?.invalidate()
-		monitorTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-			Task { @MainActor in
-				self?.evaluateNetworkSecurity()
+	// يعمل فقط عند تغير حالة الشبكة في النظام (صفر استهلاك للمعالج أثناء البحث والتصفح)
+	private func startEventDrivenNetworkMonitor() {
+		pathMonitor.pathUpdateHandler = { [weak self] _ in
+			let detected = Self.isVPNOrProxyActiveOnDevice()
+			Task { @MainActor [weak self] in
+				guard let self = self else { return }
+				let shouldBlock = (self.locks.anti_vpn_proxy ?? true) && detected
+				if self.isVPNOrProxyDetected != shouldBlock {
+					self.isVPNOrProxyDetected = shouldBlock
+				}
 			}
 		}
+		pathMonitor.start(queue: monitorQueue)
 	}
 	
 	func evaluateNetworkSecurity() {
-		guard locks.anti_vpn_proxy ?? true else {
-			if isVPNOrProxyDetected { isVPNOrProxyDetected = false }
-			return
-		}
-		let detected = Self.isVPNOrProxyActiveOnDevice()
-		if isVPNOrProxyDetected != detected {
-			isVPNOrProxyDetected = detected
+		let antiVPNEnabled = locks.anti_vpn_proxy ?? true
+		DispatchQueue.global(qos: .utility).async { [weak self] in
+			let detected = antiVPNEnabled ? Self.isVPNOrProxyActiveOnDevice() : false
+			DispatchQueue.main.async {
+				guard let self = self else { return }
+				if self.isVPNOrProxyDetected != detected {
+					self.isVPNOrProxyDetected = detected
+				}
+			}
 		}
 	}
 	
@@ -147,7 +158,6 @@ final class XSignSecurityEnforcer: ObservableObject {
 			return false
 		}
 		
-		// 1. كشف أي Proxy مفعل لتحليل أو اعتراض الشبكة (HTTP / HTTPS / SOCKS / PAC)
 		let proxyKeys = [
 			"HTTPEnable", "HTTPSEnable", "SOCKSEnable", "ProxyAutoConfigEnable",
 			"HTTPProxy", "HTTPSProxy", "SOCKSProxy"
@@ -157,7 +167,6 @@ final class XSignSecurityEnforcer: ObservableObject {
 			if let str = cfDict[key] as? String, !str.isEmpty { return true }
 		}
 		
-		// 2. كشف واجهات الـ VPN والأنفاق الوهمية (tun, tap, utun, ppp, ipsec, wg)
 		if let scoped = cfDict["__SCOPED__"] as? [String: Any] {
 			let vpnPrefixes = ["tap", "tun", "utun", "ppp", "ipsec", "wg", "pptp", "l2tp"]
 			for iface in scoped.keys {
@@ -170,54 +179,45 @@ final class XSignSecurityEnforcer: ObservableObject {
 		return false
 	}
 	
-	// الشرط الأول: التحقق قبل التوقيع لمنع تعديل الاسم أو البندل أو الأيقونة أو حقن الدايلب
+	// الشرط الأول: فحص صلاحيات التوقيع لمنع تعديل الاسم أو البندل أو الأيقونة أو حقن الدايلب
 	func validateSigningPermissions(
 		originalName: String,
 		newName: String,
 		originalBundleID: String,
 		newBundleID: String,
-		 didModifyIcon: Bool,
+		didModifyIcon: Bool,
 		injectedDylibCount: Int
 	) -> (allowed: Bool, errorMessage: String?) {
 		if (locks.require_online_handshake ?? true) && !didCompleteOnlineHandshake {
 			return (false, "يجب الاتصال بالإنترنت للتحقق من صلاحيات التوقيع والأمان.")
 		}
-		
 		if isVPNOrProxyDetected {
 			return (false, locks.vpn_warning_message ?? "يرجى إيقاف الـ VPN أو مراقب الشبكة أولاً.")
 		}
-		
-		if (locks.lock_bundle_rename ?? true) {
-			if originalName != newName || originalBundleID != newBundleID {
-				return (false, "غير مسموح بتعديل اسم التطبيق أو معرف الحزمة (Bundle ID).")
-			}
+		if (locks.lock_bundle_rename ?? true) && (originalName != newName || originalBundleID != newBundleID) {
+			return (false, "غير مسموح بتعديل اسم التطبيق أو معرف الحزمة (Bundle ID).")
 		}
-		
 		if (locks.lock_icon_change ?? true) && didModifyIcon {
 			return (false, "غير مسموح بتغيير أو استبدال أيقونة التطبيق الأصلية.")
 		}
-		
 		if (locks.lock_dylib_injection ?? true) && injectedDylibCount > 0 {
 			return (false, "غير مسموح بحقن أدوات خارجية (.dylib / .deb) داخل التطبيق.")
 		}
-		
 		return (true, nil)
 	}
 }
 
-// MARK: - مدير التزامن الفوري وكاسر الكاش (Instant Cache-Buster Manager)
+// MARK: - مدير الاتصال باللوحة (سريع ولا يعيد تحميل الكاش أثناء التصفح)
 @MainActor
 final class XSignRemoteManager: ObservableObject {
 	static let shared = XSignRemoteManager()
 	
-	// استخدام GitHub API مع ترويسة Raw لتخطي كاش الـ 5 دقائق الخاص بـ raw.githubusercontent
 	private let apiRawEndpoint = "https://api.github.com/repos/ipa-black/IPABLACK/contents/repo.json?ref=main"
 	private let fallbackRawURL = "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"
-	private let cacheKey = "xsign.cachedRemoteConfig_v3"
-	private let revKey = "xsign.lastSeenRevisionID_v3"
+	private let cacheKey = "xsign.cachedRemoteConfig_v5"
 	
 	@Published var config: XSignRemoteConfig?
-	@Published var currentRevisionID: Int = UserDefaults.standard.integer(forKey: "xsign.lastSeenRevisionID_v3")
+	private var isFetching = false
 	
 	init() {
 		if let savedData = UserDefaults.standard.data(forKey: cacheKey),
@@ -241,82 +241,74 @@ final class XSignRemoteManager: ObservableObject {
 		return currentVersion.compare(minVer, options: .numeric) == .orderedAscending
 	}
 	
-	func fetchRemoteConfig(
-		storeCache: AppStoreCacheManager? = nil,
-		sourcesViewModel: SourcesViewModel? = nil
-	) async {
+	func fetchRemoteConfig() async {
+		guard !isFetching else { return }
+		isFetching = true
+		defer { isFetching = false }
+		
 		XSignSecurityEnforcer.shared.evaluateNetworkSecurity()
 		
-		let sessionConfig = URLSessionConfiguration.ephemeral
-		sessionConfig.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-		sessionConfig.urlCache = nil
-		let session = URLSession(configuration: sessionConfig)
+		let apiEndpoint = self.apiRawEndpoint
+		let fallbackEndpoint = self.fallbackRawURL
 		
-		var fetchedData: Data? = nil
-		
-		// 1. محاولة الجلب اللحظي عبر GitHub API Raw (بدون كاش نهائياً)
-		if let apiURL = URL(string: apiRawEndpoint) {
-			var req = URLRequest(url: apiURL)
-			req.setValue("application/vnd.github.v3.raw", forHTTPHeaderField: "Accept")
-			req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-			if let (data, res) = try? await session.data(for: req),
-			   let http = res as? HTTPURLResponse, http.statusCode == 200 {
-				fetchedData = data
-			}
-		}
-		
-		// 2. البديل السريع في حال تجاوز حد الـ API
-		if fetchedData == nil, let rawURL = URL(string: "\(fallbackRawURL)?t=\(Int(Date().timeIntervalSince1970))") {
-			var req = URLRequest(url: rawURL)
-			req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-			if let (data, _) = try? await session.data(for: req) {
-				fetchedData = data
-			}
-		}
-		
-		guard let data = fetchedData else { return }
-		
-		do {
-			let decoded = try JSONDecoder().decode(XSignRemoteRoot.self, from: data)
-			if let remoteCfg = decoded.xsign_config {
-				self.config = remoteCfg
-				if let encoded = try? JSONEncoder().encode(remoteCfg) {
-					UserDefaults.standard.set(encoded, forKey: cacheKey)
+		// الجلب وفك التشفير بالكامل في خيط خلفي منفصل لعدم التأثير على سلاسة الواجهة أو البحث
+		let decodedRoot: XSignRemoteRoot? = await Task.detached(priority: .utility) {
+			let sessionConfig = URLSessionConfiguration.ephemeral
+			sessionConfig.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+			sessionConfig.timeoutIntervalForRequest = 6.0
+			sessionConfig.urlCache = nil
+			let session = URLSession(configuration: sessionConfig)
+			
+			var fetchedData: Data? = nil
+			
+			if let apiURL = URL(string: "\(apiEndpoint)&_=\(Int(Date().timeIntervalSince1970))") {
+				var req = URLRequest(url: apiURL)
+				req.setValue("application/vnd.github.v3.raw", forHTTPHeaderField: "Accept")
+				if let (data, res) = try? await session.data(for: req),
+				   let http = res as? HTTPURLResponse, http.statusCode == 200 {
+					fetchedData = data
 				}
-				
-				// تحديث أقفال الحماية والـ VPN
-				XSignSecurityEnforcer.shared.updateLocks(remoteCfg.security_locks)
-				
-				// تحديث لون التطبيق فوراً
-				if let newTint = remoteCfg.theme?.app_tint_hex, !newTint.isEmpty {
+			}
+			
+			if fetchedData == nil, let rawURL = URL(string: "\(fallbackEndpoint)?t=\(Int(Date().timeIntervalSince1970))") {
+				if let (data, _) = try? await session.data(from: rawURL) {
+					fetchedData = data
+				}
+			}
+			
+			guard let data = fetchedData else { return nil }
+			return try? JSONDecoder().decode(XSignRemoteRoot.self, from: data)
+		}.value
+		
+		guard let decoded = decodedRoot, let remoteCfg = decoded.xsign_config else { return }
+		
+		// لا نحدث الواجهة إلا إذا كان هناك تغيير فعلي في إعدادات اللوحة
+		if self.config != remoteCfg {
+			self.config = remoteCfg
+			if let encoded = try? JSONEncoder().encode(remoteCfg) {
+				UserDefaults.standard.set(encoded, forKey: cacheKey)
+			}
+			if let newTint = remoteCfg.theme?.app_tint_hex, !newTint.isEmpty {
+				let currentTint = UserDefaults.standard.string(forKey: "Feather.userTintColor")
+				if currentTint != newTint {
 					UserDefaults.standard.set(newTint, forKey: "Feather.userTintColor")
 					UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: newTint))
 				}
-				
-				applyAppControlCommands(remoteCfg.app_control)
 			}
-			
-			// إذا تغير repo_revision_id في اللوحة، يتم تحديث كاش السورسات والتطبيقات فوراً
-			if let newRev = decoded.repo_revision_id, newRev != self.currentRevisionID {
-				self.currentRevisionID = newRev
-				UserDefaults.standard.set(newRev, forKey: revKey)
-				URLCache.shared.removeAllCachedResponses()
-			}
-		} catch {
-			Logger.misc.error("XSignRemoteManager decode error: \(error.localizedDescription)")
+			applyAppControlCommands(remoteCfg.app_control)
 		}
+		
+		XSignSecurityEnforcer.shared.updateLocks(remoteCfg.security_locks)
 	}
 	
 	private func applyAppControlCommands(_ ctrl: XSignAppControl?) {
-		guard let ctrl = ctrl else { return }
-		if let flushID = ctrl.cache_flush_id {
-			let lastFlush = UserDefaults.standard.integer(forKey: "xsign.lastCacheFlushID")
-			if flushID > lastFlush {
-				ImagePipeline.shared.cache.removeAll()
-				URLCache.shared.removeAllCachedResponses()
-				ResetView.clearWorkCache()
-				UserDefaults.standard.set(flushID, forKey: "xsign.lastCacheFlushID")
-			}
+		guard let ctrl = ctrl, let flushID = ctrl.cache_flush_id else { return }
+		let lastFlush = UserDefaults.standard.integer(forKey: "xsign.lastCacheFlushID")
+		if flushID > lastFlush {
+			ImagePipeline.shared.cache.removeAll()
+			URLCache.shared.removeAllCachedResponses()
+			ResetView.clearWorkCache()
+			UserDefaults.standard.set(flushID, forKey: "xsign.lastCacheFlushID")
 		}
 	}
 }
@@ -411,7 +403,7 @@ struct FeatherApp: App {
 							}
 							.foregroundColor(.white)
 							.padding(.horizontal, 14)
-							.padding(.vertical, 8)
+							.padding(.vertical, 9)
 							.background(activeTintColor)
 						}
 					}
@@ -441,14 +433,12 @@ struct FeatherApp: App {
 					.zIndex(999)
 				}
 				
-				// قفل الصيانة أو التحديث الإجباري
 				if !_showSplash && (remoteManager.isMaintenanceActive || remoteManager.isForceUpdateRequired) {
 					XSignRemoteGateOverlayView(remoteManager: remoteManager, tintColor: activeTintColor)
 						.transition(.opacity)
 						.zIndex(1000)
 				}
 				
-				// قفل الحماية الفوري عند اكتشاف VPN أو مراقب شبكة (Proxy / MITM)
 				if securityEnforcer.isVPNOrProxyDetected {
 					XSignVPNBlockedOverlayView(
 						message: securityEnforcer.locks.vpn_warning_message ?? "عذراً، لا يمكن استخدام التطبيق أو التحميل أثناء تشغيل VPN أو مراقب شبكة."
@@ -461,13 +451,13 @@ struct FeatherApp: App {
 			}
 			.preferredColorScheme(.dark)
 			.task {
-				await remoteManager.fetchRemoteConfig(storeCache: storeCache, sourcesViewModel: sourcesViewModel)
+				await remoteManager.fetchRemoteConfig()
 			}
 			.onChange(of: scenePhase) { newPhase in
 				if newPhase == .active {
 					securityEnforcer.evaluateNetworkSecurity()
 					Task {
-						await remoteManager.fetchRemoteConfig(storeCache: storeCache, sourcesViewModel: sourcesViewModel)
+						await remoteManager.fetchRemoteConfig()
 					}
 				}
 			}
@@ -495,7 +485,6 @@ struct FeatherApp: App {
 	}
 	
 	private func _handleURL(_ url: URL) {
-		// منع أي تحميل أو استيراد إذا كان الـ VPN أو مراقب الشبكة مفعلاً
 		XSignSecurityEnforcer.shared.evaluateNetworkSecurity()
 		if XSignSecurityEnforcer.shared.isVPNOrProxyDetected {
 			UIAlertController.showAlertWithOk(
@@ -603,7 +592,7 @@ struct FeatherApp: App {
 	}
 }
 
-// MARK: - شاشة الحظر عند اكتشاف VPN أو مراقب شبكة (Proxy / MITM)
+// MARK: - شاشة الحظر عند اكتشاف VPN أو مراقب شبكة
 struct XSignVPNBlockedOverlayView: View {
 	let message: String
 	var onRetry: () -> Void
@@ -699,8 +688,7 @@ struct XSignRemoteGateOverlayView: View {
 // MARK: - المسارات الهندسية المطابقة 100% لصورة X Sign (الشريطان المفرغان + الريشة)
 struct ExactImageXLeftRibbon: Shape {
 	func path(in rect: CGRect) -> Path {
-		let w = rect.width
-		let h = rect.height
+		let w = rect.width, h = rect.height
 		func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * w, y: y * h) }
 		
 		var path = Path()
@@ -721,8 +709,7 @@ struct ExactImageXLeftRibbon: Shape {
 
 struct ExactImageXRightRibbon: Shape {
 	func path(in rect: CGRect) -> Path {
-		let w = rect.width
-		let h = rect.height
+		let w = rect.width, h = rect.height
 		func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * w, y: y * h) }
 		
 		var path = Path()
@@ -743,8 +730,7 @@ struct ExactImageXRightRibbon: Shape {
 
 struct ExactImageSignFeatherWing: Shape {
 	func path(in rect: CGRect) -> Path {
-		let w = rect.width
-		let h = rect.height
+		let w = rect.width, h = rect.height
 		func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * w, y: y * h) }
 		
 		var path = Path()
@@ -867,10 +853,11 @@ struct XSignPhotoIdenticalSplashView: View {
 			}
 		}
 		.task {
+			// تمرير سورس ipablack كأولوية قصوى لصفحة اليوم
 			await cache.ensureFetched(sources: _sources, viewModel: sourcesViewModel)
 			checkIfReadyToDismiss()
 		}
-		.onChange(of: cache.allCombinedItems.count) { _ in
+		.onChange(of: cache.ipablackItems.count) { _ in
 			checkIfReadyToDismiss()
 		}
 		.onAppear {
@@ -888,7 +875,7 @@ struct XSignPhotoIdenticalSplashView: View {
 			fillAlpha = 1.0
 			leftSlide = CGSize(width: -120, height: 120)
 			rightSlide = CGSize(width: 120, height: -120)
-			withAnimation(.spring(response: 0.75, dampingFraction: 0.72)) {
+			withAnimation(.spring(response: 0.72, dampingFraction: 0.72)) {
 				leftSlide = .zero
 				rightSlide = .zero
 				scaleValue = 1.0
@@ -898,14 +885,14 @@ struct XSignPhotoIdenticalSplashView: View {
 			drawProgress = 1.0
 			fillAlpha = 1.0
 			scaleValue = 1.0
-			withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+			withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
 				glowOpacity = 1.0
 				scaleValue = 0.96
 			}
 		case "apple_minimal":
 			drawProgress = 1.0
 			scaleValue = 0.85
-			withAnimation(.easeOut(duration: 1.1)) {
+			withAnimation(.easeOut(duration: 1.0)) {
 				fillAlpha = 1.0
 				scaleValue = 1.0
 				glowOpacity = 0.35
@@ -913,17 +900,17 @@ struct XSignPhotoIdenticalSplashView: View {
 		default:
 			drawProgress = 0.0
 			fillAlpha = 0.0
-			withAnimation(.easeInOut(duration: 1.35)) {
+			withAnimation(.easeInOut(duration: 1.25)) {
 				drawProgress = 1.0
 				scaleValue = 1.0
 			}
-			withAnimation(.easeIn(duration: 0.55).delay(1.05)) {
+			withAnimation(.easeIn(duration: 0.5).delay(0.95)) {
 				fillAlpha = 1.0
 				glowOpacity = 0.6
 			}
 		}
 		
-		DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+		DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
 			didFinishMinimumAnimation = true
 			checkIfReadyToDismiss()
 		}
@@ -933,9 +920,10 @@ struct XSignPhotoIdenticalSplashView: View {
 		}
 	}
 	
+	// الاعتماد الحصري على سورس ipablackItems لصفحة اليوم
 	private func checkIfReadyToDismiss() {
 		guard didFinishMinimumAnimation else { return }
-		if !cache.ipablackItems.isEmpty || !cache.allCombinedItems.isEmpty {
+		if !cache.ipablackItems.isEmpty {
 			dismissSplash()
 		}
 	}
@@ -965,6 +953,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		URLCache.shared.removeAllCachedResponses()
 	}
 	
+	// تم تحسين إعدادات Nuke هنا لمنع اللاك نهائياً أثناء البحث والتمرير السريع
 	private func _createLowMemoryPipeline() {
 		DataLoader.sharedUrlCache.diskCapacity = 0
 		DataLoader.sharedUrlCache.memoryCapacity = 0
@@ -974,19 +963,19 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				let config = URLSessionConfiguration.default
 				config.urlCache = nil
 				config.requestCachePolicy = .returnCacheDataElseLoad
-				config.httpMaximumConnectionsPerHost = 12
+				config.httpMaximumConnectionsPerHost = 8
 				return DataLoader(configuration: config)
 			}()
 			let dataCache = try? DataCache(name: "thewonderofyou.Feather.datacache")
 			let imageCache = Nuke.ImageCache()
 			dataCache?.sizeLimit = 300 * 1024 * 1024
-			imageCache.costLimit = 40 * 1024 * 1024
-			imageCache.countLimit = 100
+			imageCache.costLimit = 90 * 1024 * 1024
+			imageCache.countLimit = 300
 			$0.dataCache = dataCache
 			$0.imageCache = imageCache
 			$0.dataLoader = dataLoader
-			$0.dataCachePolicy = .storeEncodedImages
-			$0.isStoringPreviewsInMemoryCache = false
+			$0.dataCachePolicy = .storeAll
+			$0.isStoringPreviewsInMemoryCache = true
 			$0.isDecompressionEnabled = true
 		}
 		
@@ -1021,16 +1010,16 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				if urlStr.contains("apptesters") || idStr.contains("apptesters") {
 					context.delete(source)
 				} else if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
-					if !urlStr.contains("/ipablack/") && !urlStr.contains("store-api") {
+					if !urlStr.contains("/ipablack/") {
 						context.delete(source)
 					}
 				}
 			}
 			UserDefaults.standard.set(true, forKey: purgedOnceKey)
 			
+			// اعتماد سورس IPA BLACK الرسمي كمصدر أساسي لصفحة اليوم
 			let coreRepos: [(name: String, id: String, url: String)] = [
-				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"),
-				("IPA BLACK Store", "xsign.core.storeapi", "https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json")
+				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json")
 			]
 			
 			let updatedExisting = (try? context.fetch(request)) ?? []
@@ -1090,7 +1079,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				
 				FR.handleCertificateFiles(
 					p12URL: p12Url,
-					provisionURL: provisionUrl,
+					provisionURL: provisionURL,
 					p12Password: password,
 					certificateName: certName,
 					isDefault: true
