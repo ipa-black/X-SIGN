@@ -15,14 +15,14 @@ import Combine
 import SystemConfiguration
 import Network
 
-// MARK: - نماذج إعدادات اللوحة (Fault-Tolerant Codable)
-struct XSignRemoteRoot: Codable {
+// MARK: - نماذج إعدادات اللوحة (Fault-Tolerant & Sendable)
+struct XSignRemoteRoot: Codable, Sendable {
 	let tintColor: String?
 	let repo_revision_id: Int?
 	let xsign_config: XSignRemoteConfig?
 }
 
-struct XSignRemoteConfig: Codable, Equatable {
+struct XSignRemoteConfig: Codable, Equatable, Sendable {
 	let splash_screen: XSignSplashConfig?
 	let theme: XSignThemeColors?
 	let maintenance: XSignMaintenance?
@@ -31,7 +31,7 @@ struct XSignRemoteConfig: Codable, Equatable {
 	let app_control: XSignAppControl?
 }
 
-struct XSignSplashConfig: Codable, Equatable {
+struct XSignSplashConfig: Codable, Equatable, Sendable {
 	let engine: String?
 	let animation_style: String?
 	let show_sign_feather: Bool?
@@ -39,28 +39,28 @@ struct XSignSplashConfig: Codable, Equatable {
 	let custom_code: String?
 }
 
-struct XSignThemeColors: Codable, Equatable {
+struct XSignThemeColors: Codable, Equatable, Sendable {
 	let app_tint_hex: String?
 	let splash_bg_top_hex: String?
 	let splash_bg_bottom_hex: String?
 	let splash_logo_hex: String?
 }
 
-struct XSignMaintenance: Codable, Equatable {
+struct XSignMaintenance: Codable, Equatable, Sendable {
 	let enabled: Bool?
 	let title: String?
 	let message: String?
 	let button_url: String?
 }
 
-struct XSignForceUpdate: Codable, Equatable {
+struct XSignForceUpdate: Codable, Equatable, Sendable {
 	let enabled: Bool?
 	let min_version: String?
 	let update_url: String?
 	let message: String?
 }
 
-struct XSignSecurityLocks: Codable, Equatable {
+struct XSignSecurityLocks: Codable, Equatable, Sendable {
 	let lock_bundle_rename: Bool?
 	let lock_icon_change: Bool?
 	let lock_dylib_injection: Bool?
@@ -69,13 +69,13 @@ struct XSignSecurityLocks: Codable, Equatable {
 	let vpn_warning_message: String?
 }
 
-struct XSignCoreSourceItem: Codable, Equatable {
+struct XSignCoreSourceItem: Codable, Equatable, Sendable {
 	let name: String
 	let id: String
 	let url: String
 }
 
-struct XSignAppControl: Codable, Equatable {
+struct XSignAppControl: Codable, Equatable, Sendable {
 	let top_banner_enabled: Bool?
 	let top_banner_text: String?
 	let top_banner_url: String?
@@ -84,7 +84,7 @@ struct XSignAppControl: Codable, Equatable {
 	let core_sources: [XSignCoreSourceItem]?
 }
 
-// MARK: - مدقق الحماية الخفيف (بدون أي Timer يسبب لاك للواجهة)
+// MARK: - مدقق الحماية الخفيف (متوافق مع Xcode 26.3 بدون تحذيرات Sendable)
 @MainActor
 final class XSignSecurityEnforcer: ObservableObject {
 	static let shared = XSignSecurityEnforcer()
@@ -125,7 +125,6 @@ final class XSignSecurityEnforcer: ObservableObject {
 		evaluateNetworkSecurity()
 	}
 	
-	// يعمل فقط عند تغير حالة الشبكة في النظام (صفر استهلاك للمعالج أثناء البحث والتصفح)
 	private func startEventDrivenNetworkMonitor() {
 		pathMonitor.pathUpdateHandler = { [weak self] _ in
 			let detected = Self.isVPNOrProxyActiveOnDevice()
@@ -154,7 +153,10 @@ final class XSignSecurityEnforcer: ObservableObject {
 	}
 	
 	nonisolated static func isVPNOrProxyActiveOnDevice() -> Bool {
-		guard let cfDict = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
+		guard let cfSettings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() else {
+			return false
+		}
+		guard let cfDict = cfSettings as NSDictionary as? [String: Any] else {
 			return false
 		}
 		
@@ -179,7 +181,6 @@ final class XSignSecurityEnforcer: ObservableObject {
 		return false
 	}
 	
-	// الشرط الأول: فحص صلاحيات التوقيع لمنع تعديل الاسم أو البندل أو الأيقونة أو حقن الدايلب
 	func validateSigningPermissions(
 		originalName: String,
 		newName: String,
@@ -207,7 +208,7 @@ final class XSignSecurityEnforcer: ObservableObject {
 	}
 }
 
-// MARK: - مدير الاتصال باللوحة (سريع ولا يعيد تحميل الكاش أثناء التصفح)
+// MARK: - مدير الاتصال باللوحة
 @MainActor
 final class XSignRemoteManager: ObservableObject {
 	static let shared = XSignRemoteManager()
@@ -251,7 +252,6 @@ final class XSignRemoteManager: ObservableObject {
 		let apiEndpoint = self.apiRawEndpoint
 		let fallbackEndpoint = self.fallbackRawURL
 		
-		// الجلب وفك التشفير بالكامل في خيط خلفي منفصل لعدم التأثير على سلاسة الواجهة أو البحث
 		let decodedRoot: XSignRemoteRoot? = await Task.detached(priority: .utility) {
 			let sessionConfig = URLSessionConfiguration.ephemeral
 			sessionConfig.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -282,7 +282,6 @@ final class XSignRemoteManager: ObservableObject {
 		
 		guard let decoded = decodedRoot, let remoteCfg = decoded.xsign_config else { return }
 		
-		// لا نحدث الواجهة إلا إذا كان هناك تغيير فعلي في إعدادات اللوحة
 		if self.config != remoteCfg {
 			self.config = remoteCfg
 			if let encoded = try? JSONEncoder().encode(remoteCfg) {
@@ -575,7 +574,8 @@ struct FeatherApp: App {
 			}
 		} else {
 			if url.pathExtension == "ipa" || url.pathExtension == "tipa" {
-				Task.detached(priority: .userInteractive) {
+				// تم استبدال .userInteractive بـ .high للتوافق مع Xcode 26.3
+				Task.detached(priority: .high) {
 					autoreleasepool {
 						if FileManager.default.isFileFromFileProvider(at: url) {
 							guard url.startAccessingSecurityScopedResource() else { return }
@@ -685,7 +685,7 @@ struct XSignRemoteGateOverlayView: View {
 	}
 }
 
-// MARK: - المسارات الهندسية المطابقة 100% لصورة X Sign (الشريطان المفرغان + الريشة)
+// MARK: - المسارات الهندسية المطابقة 100% لصورة X Sign
 struct ExactImageXLeftRibbon: Shape {
 	func path(in rect: CGRect) -> Path {
 		let w = rect.width, h = rect.height
@@ -853,7 +853,6 @@ struct XSignPhotoIdenticalSplashView: View {
 			}
 		}
 		.task {
-			// تمرير سورس ipablack كأولوية قصوى لصفحة اليوم
 			await cache.ensureFetched(sources: _sources, viewModel: sourcesViewModel)
 			checkIfReadyToDismiss()
 		}
@@ -920,7 +919,6 @@ struct XSignPhotoIdenticalSplashView: View {
 		}
 	}
 	
-	// الاعتماد الحصري على سورس ipablackItems لصفحة اليوم
 	private func checkIfReadyToDismiss() {
 		guard didFinishMinimumAnimation else { return }
 		if !cache.ipablackItems.isEmpty {
@@ -953,7 +951,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		URLCache.shared.removeAllCachedResponses()
 	}
 	
-	// تم تحسين إعدادات Nuke هنا لمنع اللاك نهائياً أثناء البحث والتمرير السريع
 	private func _createLowMemoryPipeline() {
 		DataLoader.sharedUrlCache.diskCapacity = 0
 		DataLoader.sharedUrlCache.memoryCapacity = 0
@@ -1017,7 +1014,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			}
 			UserDefaults.standard.set(true, forKey: purgedOnceKey)
 			
-			// اعتماد سورس IPA BLACK الرسمي كمصدر أساسي لصفحة اليوم
 			let coreRepos: [(name: String, id: String, url: String)] = [
 				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json")
 			]
@@ -1062,23 +1058,24 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				
 				let certName = folderURL.lastPathComponent
 				
-				let p12Url = folderURL.appendingPathComponent("cert.p12")
-				let provisionUrl = folderURL.appendingPathComponent("cert.mobileprovision")
-				let passwordUrl = folderURL.appendingPathComponent("cert.txt")
+				// توحيد أسماء المتغيرات p12URL و provisionURL و passwordURL لمنع خطأ السطر 1082
+				let p12URL = folderURL.appendingPathComponent("cert.p12")
+				let provisionURL = folderURL.appendingPathComponent("cert.mobileprovision")
+				let passwordURL = folderURL.appendingPathComponent("cert.txt")
 				
 				guard
-					FileManager.default.fileExists(atPath: p12Url.path),
-					FileManager.default.fileExists(atPath: provisionUrl.path),
-					FileManager.default.fileExists(atPath: passwordUrl.path)
+					FileManager.default.fileExists(atPath: p12URL.path),
+					FileManager.default.fileExists(atPath: provisionURL.path),
+					FileManager.default.fileExists(atPath: passwordURL.path)
 				else {
 					Logger.misc.warning("Skipping \(certName): missing required files")
 					continue
 				}
 				
-				let password = try String(contentsOf: passwordUrl, encoding: .utf8)
+				let password = try String(contentsOf: passwordURL, encoding: .utf8)
 				
 				FR.handleCertificateFiles(
-					p12URL: p12Url,
+					p12URL: p12URL,
 					provisionURL: provisionURL,
 					p12Password: password,
 					certificateName: certName,
