@@ -15,7 +15,7 @@ import Combine
 import SystemConfiguration
 import Network
 
-// MARK: - نماذج إعدادات اللوحة (Fault-Tolerant & Sendable)
+// MARK: - نماذج إعدادات اللوحة (متوافقة مع Sendable في Xcode 26.3)
 struct XSignRemoteRoot: Codable, Sendable {
 	let tintColor: String?
 	let repo_revision_id: Int?
@@ -84,12 +84,12 @@ struct XSignAppControl: Codable, Equatable, Sendable {
 	let core_sources: [XSignCoreSourceItem]?
 }
 
-// MARK: - مدقق الحماية الخفيف (متوافق مع Xcode 26.3 بدون تحذيرات Sendable)
+// MARK: - مدقق الحماية والأمان (بدون أي مؤقتات تسبب لاك أثناء البحث)
 @MainActor
 final class XSignSecurityEnforcer: ObservableObject {
 	static let shared = XSignSecurityEnforcer()
 	
-	private let locksStorageKey = "xsign.persistedSecurityLocks_v3"
+	private let locksStorageKey = "xsign.persistedSecurityLocks_v4"
 	private let pathMonitor = NWPathMonitor()
 	private let monitorQueue = DispatchQueue(label: "com.ipablack.xsign.netguard", qos: .utility)
 	
@@ -208,16 +208,18 @@ final class XSignSecurityEnforcer: ObservableObject {
 	}
 }
 
-// MARK: - مدير الاتصال باللوحة
+// MARK: - مدير المزامنة مع لوحة التحكم (يحدث التطبيقات المحذوفة والأيقونات الجديدة تلقائياً)
 @MainActor
 final class XSignRemoteManager: ObservableObject {
 	static let shared = XSignRemoteManager()
 	
 	private let apiRawEndpoint = "https://api.github.com/repos/ipa-black/IPABLACK/contents/repo.json?ref=main"
 	private let fallbackRawURL = "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json"
-	private let cacheKey = "xsign.cachedRemoteConfig_v5"
+	private let cacheKey = "xsign.cachedRemoteConfig_v6"
+	private let revKey = "xsign.lastSeenRevisionID_v6"
 	
 	@Published var config: XSignRemoteConfig?
+	@Published var currentRevisionID: Int = UserDefaults.standard.integer(forKey: "xsign.lastSeenRevisionID_v6")
 	private var isFetching = false
 	
 	init() {
@@ -242,7 +244,10 @@ final class XSignRemoteManager: ObservableObject {
 		return currentVersion.compare(minVer, options: .numeric) == .orderedAscending
 	}
 	
-	func fetchRemoteConfig() async {
+	func fetchRemoteConfig(
+		storeCache: AppStoreCacheManager? = nil,
+		sourcesViewModel: SourcesViewModel? = nil
+	) async {
 		guard !isFetching else { return }
 		isFetching = true
 		defer { isFetching = false }
@@ -280,24 +285,39 @@ final class XSignRemoteManager: ObservableObject {
 			return try? JSONDecoder().decode(XSignRemoteRoot.self, from: data)
 		}.value
 		
-		guard let decoded = decodedRoot, let remoteCfg = decoded.xsign_config else { return }
+		guard let decoded = decodedRoot else { return }
 		
-		if self.config != remoteCfg {
-			self.config = remoteCfg
-			if let encoded = try? JSONEncoder().encode(remoteCfg) {
-				UserDefaults.standard.set(encoded, forKey: cacheKey)
-			}
-			if let newTint = remoteCfg.theme?.app_tint_hex, !newTint.isEmpty {
-				let currentTint = UserDefaults.standard.string(forKey: "Feather.userTintColor")
-				if currentTint != newTint {
-					UserDefaults.standard.set(newTint, forKey: "Feather.userTintColor")
-					UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: newTint))
+		if let remoteCfg = decoded.xsign_config {
+			if self.config != remoteCfg {
+				self.config = remoteCfg
+				if let encoded = try? JSONEncoder().encode(remoteCfg) {
+					UserDefaults.standard.set(encoded, forKey: cacheKey)
 				}
+				if let newTint = remoteCfg.theme?.app_tint_hex, !newTint.isEmpty {
+					let currentTint = UserDefaults.standard.string(forKey: "Feather.userTintColor")
+					if currentTint != newTint {
+						UserDefaults.standard.set(newTint, forKey: "Feather.userTintColor")
+						UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: newTint))
+					}
+				}
+				applyAppControlCommands(remoteCfg.app_control)
 			}
-			applyAppControlCommands(remoteCfg.app_control)
+			XSignSecurityEnforcer.shared.updateLocks(remoteCfg.security_locks)
 		}
 		
-		XSignSecurityEnforcer.shared.updateLocks(remoteCfg.security_locks)
+		// إذا تم حذف تطبيق أو رفع تطبيق جديد بصورة مستخرجة في اللوحة، يتغير repo_revision_id فنحدث السورس فوراً
+		if let newRev = decoded.repo_revision_id, newRev != self.currentRevisionID {
+			self.currentRevisionID = newRev
+			UserDefaults.standard.set(newRev, forKey: revKey)
+			URLCache.shared.removeAllCachedResponses()
+			
+			if let storeCache = storeCache, let sourcesViewModel = sourcesViewModel {
+				let request = NSFetchRequest<AltSource>(entityName: "AltSource")
+				if let sources = try? Storage.shared.context.fetch(request) {
+					await storeCache.ensureFetched(sources: sources, viewModel: sourcesViewModel)
+				}
+			}
+		}
 	}
 	
 	private func applyAppControlCommands(_ ctrl: XSignAppControl?) {
@@ -450,13 +470,13 @@ struct FeatherApp: App {
 			}
 			.preferredColorScheme(.dark)
 			.task {
-				await remoteManager.fetchRemoteConfig()
+				await remoteManager.fetchRemoteConfig(storeCache: storeCache, sourcesViewModel: sourcesViewModel)
 			}
 			.onChange(of: scenePhase) { newPhase in
 				if newPhase == .active {
 					securityEnforcer.evaluateNetworkSecurity()
 					Task {
-						await remoteManager.fetchRemoteConfig()
+						await remoteManager.fetchRemoteConfig(storeCache: storeCache, sourcesViewModel: sourcesViewModel)
 					}
 				}
 			}
@@ -574,7 +594,6 @@ struct FeatherApp: App {
 			}
 		} else {
 			if url.pathExtension == "ipa" || url.pathExtension == "tipa" {
-				// تم استبدال .userInteractive بـ .high للتوافق مع Xcode 26.3
 				Task.detached(priority: .high) {
 					autoreleasepool {
 						if FileManager.default.isFileFromFileProvider(at: url) {
@@ -866,7 +885,7 @@ struct XSignPhotoIdenticalSplashView: View {
 	
 	private func runSelectedAnimationStyle() {
 		let style = remoteManager.config?.splash_screen?.animation_style ?? "laser_draw"
-		let duration = remoteManager.config?.splash_screen?.duration_seconds ?? 3.5
+		let duration = remoteManager.config?.splash_screen?.duration_seconds ?? 3.2
 		
 		switch style {
 		case "twin_slash":
@@ -951,6 +970,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		URLCache.shared.removeAllCachedResponses()
 	}
 	
+	// إعداد كاش صور ذكي يحمل أيقونات GitHub المستخرجة فوراً ولا يخزن أخطاء 404
 	private func _createLowMemoryPipeline() {
 		DataLoader.sharedUrlCache.diskCapacity = 0
 		DataLoader.sharedUrlCache.memoryCapacity = 0
@@ -959,7 +979,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			let dataLoader: DataLoader = {
 				let config = URLSessionConfiguration.default
 				config.urlCache = nil
-				config.requestCachePolicy = .returnCacheDataElseLoad
+				config.requestCachePolicy = .useProtocolCachePolicy
 				config.httpMaximumConnectionsPerHost = 8
 				return DataLoader(configuration: config)
 			}()
@@ -1058,7 +1078,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				
 				let certName = folderURL.lastPathComponent
 				
-				// توحيد أسماء المتغيرات p12URL و provisionURL و passwordURL لمنع خطأ السطر 1082
 				let p12URL = folderURL.appendingPathComponent("cert.p12")
 				let provisionURL = folderURL.appendingPathComponent("cert.mobileprovision")
 				let passwordURL = folderURL.appendingPathComponent("cert.txt")
