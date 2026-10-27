@@ -293,7 +293,8 @@ final class XSignRemoteManager: ObservableObject {
 				if let encoded = try? JSONEncoder().encode(remoteCfg) {
 					UserDefaults.standard.set(encoded, forKey: cacheKey)
 				}
-				if let newTint = remoteCfg.theme?.app_tint_hex, !newTint.isEmpty {
+				if !UserDefaults.standard.bool(forKey: "Feather.hasCustomTintColor"),
+				   let newTint = remoteCfg.theme?.app_tint_hex, !newTint.isEmpty {
 					let currentTint = UserDefaults.standard.string(forKey: "Feather.userTintColor")
 					if currentTint != newTint {
 						UserDefaults.standard.set(newTint, forKey: "Feather.userTintColor")
@@ -392,11 +393,32 @@ struct FeatherApp: App {
 	let storage = Storage.shared
 	
 	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
+    @AppStorage("Feather.userInterfaceStyle")
+    private var userInterfaceStyle: Int = UIUserInterfaceStyle.unspecified.rawValue
 	@State private var _showSplash = true
 	
 	private var activeTintColor: Color {
 		Color(hex: userTintHex)
 	}
+
+    private var preferredAppColorScheme: ColorScheme? {
+        switch UIUserInterfaceStyle(rawValue: userInterfaceStyle) ?? .unspecified {
+        case .light: return .light
+        case .dark: return .dark
+        default: return nil
+        }
+    }
+
+    private func applyAppearanceToWindows() {
+        let style = UIUserInterfaceStyle(rawValue: userInterfaceStyle) ?? .unspecified
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            for window in windowScene.windows {
+                window.overrideUserInterfaceStyle = style
+                window.tintColor = UIColor(activeTintColor)
+            }
+        }
+    }
 	
 	var body: some Scene {
 		WindowGroup {
@@ -420,7 +442,7 @@ struct FeatherApp: App {
 								Image(systemName: "chevron.left")
 									.font(.caption2)
 							}
-							.foregroundColor(.white)
+							.foregroundColor(AppStoreTheme.contrastingText(forHex: userTintHex))
 							.padding(.horizontal, 14)
 							.padding(.vertical, 9)
 							.background(activeTintColor)
@@ -468,7 +490,9 @@ struct FeatherApp: App {
 					.zIndex(2000)
 				}
 			}
-			.preferredColorScheme(.dark)
+            .tint(activeTintColor)
+            .accentColor(activeTintColor)
+			.preferredColorScheme(preferredAppColorScheme)
 			.task {
 				await remoteManager.fetchRemoteConfig(storeCache: storeCache, sourcesViewModel: sourcesViewModel)
 			}
@@ -480,9 +504,12 @@ struct FeatherApp: App {
 					}
 				}
 			}
-			.onChange(of: userTintHex) { newHex in
-				UIApplication.topViewController()?.view.window?.tintColor = UIColor(Color(hex: newHex))
-			}
+            .onChange(of: userTintHex) { _ in
+                applyAppearanceToWindows()
+            }
+            .onChange(of: userInterfaceStyle) { _ in
+                applyAppearanceToWindows()
+            }
 			.onReceive(NotificationCenter.default.publisher(for: .heartbeatInvalidHost)) { _ in
 				DispatchQueue.main.async {
 					UIAlertController.showAlertWithOk(
@@ -495,10 +522,7 @@ struct FeatherApp: App {
 				if UserDefaults.standard.string(forKey: "Feather.userTintColor") == nil {
 					UserDefaults.standard.set("#005BBB", forKey: "Feather.userTintColor")
 				}
-				if let style = UIUserInterfaceStyle(rawValue: UserDefaults.standard.integer(forKey: "Feather.userInterfaceStyle")) {
-					UIApplication.topViewController()?.view.window?.overrideUserInterfaceStyle = style
-				}
-				UIApplication.topViewController()?.view.window?.tintColor = UIColor(activeTintColor)
+                applyAppearanceToWindows()
 			}
 		}
 	}
@@ -618,7 +642,7 @@ struct XSignVPNBlockedOverlayView: View {
 	
 	var body: some View {
 		ZStack {
-			Color(red: 0.02, green: 0.04, blue: 0.09).ignoresSafeArea()
+			AppStoreTheme.background.ignoresSafeArea()
 			
 			VStack(spacing: 18) {
 				Image(systemName: "network.badge.shield.half.filled")
@@ -627,11 +651,11 @@ struct XSignVPNBlockedOverlayView: View {
 				
 				Text("تم إيقاف الاتصال لحماية التطبيق")
 					.font(.title3.bold())
-					.foregroundColor(.white)
+					.foregroundColor(.primary)
 				
 				Text(message)
 					.font(.subheadline)
-					.foregroundColor(.white.opacity(0.8))
+					.foregroundColor(.secondary)
 					.multilineTextAlignment(.center)
 					.padding(.horizontal, 28)
 				
@@ -656,28 +680,29 @@ struct XSignVPNBlockedOverlayView: View {
 struct XSignRemoteGateOverlayView: View {
 	@ObservedObject var remoteManager: XSignRemoteManager
 	let tintColor: Color
+    @AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	
 	var body: some View {
 		ZStack {
-			Color(red: 0.0, green: 0.17, blue: 0.40).ignoresSafeArea()
+			AppStoreTheme.background.ignoresSafeArea()
 			
 			VStack(spacing: 20) {
 				Image(systemName: remoteManager.isMaintenanceActive ? "wrench.and.screwdriver.fill" : "arrow.down.circle.fill")
 					.font(.system(size: 56))
-					.foregroundColor(.white)
+					.foregroundColor(tintColor)
 				
 				Text(remoteManager.isMaintenanceActive
 					 ? (remoteManager.config?.maintenance?.title ?? "التطبيق قيد الصيانة")
 					 : "تحديث إجباري مطلوب")
 					.font(.title2.bold())
-					.foregroundColor(.white)
+					.foregroundColor(.primary)
 					.multilineTextAlignment(.center)
 				
 				Text(remoteManager.isMaintenanceActive
 					 ? (remoteManager.config?.maintenance?.message ?? "يرجى المحاولة لاحقاً.")
 					 : (remoteManager.config?.force_update?.message ?? "يرجى تحديث التطبيق لأحدث إصدار."))
 					.font(.subheadline)
-					.foregroundColor(.white.opacity(0.8))
+					.foregroundColor(.secondary)
 					.multilineTextAlignment(.center)
 					.padding(.horizontal, 24)
 				
@@ -691,10 +716,10 @@ struct XSignRemoteGateOverlayView: View {
 				} label: {
 					Text(remoteManager.isMaintenanceActive ? "متابعة قناة التيليجرام" : "تحديث التطبيق الآن")
 						.font(.headline.bold())
-						.foregroundColor(Color(red: 0.0, green: 0.17, blue: 0.40))
+						.foregroundColor(AppStoreTheme.contrastingText(forHex: userTintHex))
 						.frame(maxWidth: .infinity)
 						.padding(.vertical, 14)
-						.background(Color.white)
+						.background(tintColor)
 						.cornerRadius(14)
 				}
 				.padding(.horizontal, 36)

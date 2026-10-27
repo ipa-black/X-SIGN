@@ -62,7 +62,7 @@ extension LibraryInfoView {
 			}
 			
 			if 
-				let name = app.name, 
+				app.name != nil,
 				let appDirectory = Storage.shared.getAppDirectory(for: app),
 				let appMinimumOS = Bundle(url: appDirectory)?.minimumOSVersion
 			{

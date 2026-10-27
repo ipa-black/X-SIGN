@@ -11,6 +11,7 @@ import NimbleViews
 
 // MARK: - Minimalist Signing View with Instant Info.plist Auto-Sign on Import
 struct LibraryView: View {
+    @AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
 	@StateObject var downloadManager = DownloadManager.shared
 	@StateObject var sourcesViewModel = SourcesViewModel.shared
 	
@@ -44,10 +45,9 @@ struct LibraryView: View {
 			
 			if combined.contains(query) { return true }
 			
-			for group in AppStoreBilingualEngine.synonymGroups {
-				let normalizedGroup = group.map { AppStoreBilingualEngine.normalize($0) }
-				if normalizedGroup.contains(where: { combined.contains($0) }) &&
-				   normalizedGroup.contains(where: { $0.contains(query) || query.contains($0) }) {
+			for group in AppStoreBilingualEngine.preNormalizedSynonymGroups {
+				if group.contains(where: { combined.contains($0) }) &&
+				   group.contains(where: { $0.contains(query) || query.contains($0) }) {
 					return true
 				}
 			}
@@ -101,10 +101,10 @@ struct LibraryView: View {
 					Section {
 						HStack(spacing: 10) {
 							ProgressView()
-								.tint(AppStoreTheme.dynamicAccent)
+								.tint(Color(hex: userTintHex))
 							Text(status)
 								.font(.subheadline.weight(.semibold))
-								.foregroundStyle(.white)
+								.foregroundStyle(.primary)
 							Spacer()
 						}
 						.padding(.vertical, 4)
@@ -131,7 +131,7 @@ struct LibraryView: View {
 										HStack(spacing: 6) {
 											if _signingInProgressUUIDs.contains(app.uuid ?? "") {
 												ProgressView()
-													.tint(.white)
+													.tint(AppStoreTheme.contrastingText(forHex: userTintHex))
 													.scaleEffect(0.8)
 												Text("توقيع لحظي...")
 													.font(.footnote.weight(.bold))
@@ -142,12 +142,12 @@ struct LibraryView: View {
 													.font(.footnote.weight(.bold))
 											}
 										}
-										.foregroundStyle(.white)
+										.foregroundStyle(AppStoreTheme.contrastingText(forHex: userTintHex))
 										.frame(maxWidth: .infinity)
 										.padding(.vertical, 8)
 										.background(
 											Capsule(style: .continuous)
-												.fill(AppStoreTheme.dynamicAccent)
+												.fill(Color(hex: userTintHex))
 										)
 									}
 									.buttonStyle(.plain)
@@ -160,7 +160,7 @@ struct LibraryView: View {
 											.font(.footnote.weight(.bold))
 											.foregroundStyle(.secondary)
 											.frame(width: 36, height: 32)
-											.background(Color(white: 0.16), in: Capsule())
+											.background(AppStoreTheme.controlSurface, in: Capsule())
 									}
 									.buttonStyle(.plain)
 								}
@@ -286,7 +286,6 @@ struct LibraryView: View {
 			}
 		}
 		.environment(\.layoutDirection, .rightToLeft)
-		.preferredColorScheme(.dark)
 	}
 	
 	// MARK: - Direct Native Importer + Instant Auto-Sign

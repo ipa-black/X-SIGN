@@ -13,7 +13,6 @@ import IDeviceSwift
 
 // MARK: - View
 struct SettingsView: View {
-	@State private var _currentIcon: String? = UIApplication.shared.alternateIconName
     
 	// MARK: Body
 	var body: some View {
@@ -24,9 +23,6 @@ struct SettingsView: View {
 				Section {
 					NavigationLink(destination: AppearanceView()) {
 						Label(.localized("Appearance"), systemImage: "paintbrush")
-					}
-					NavigationLink(destination: AppIconView(currentIcon: $_currentIcon)) {
-						Label(.localized("App Icon"), systemImage: "app.badge")
 					}
 				}
                 

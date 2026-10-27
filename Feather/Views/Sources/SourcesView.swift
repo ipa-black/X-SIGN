@@ -5,6 +5,7 @@
 //  Created by samara on 10.04.2025.
 //
 
+import Foundation
 import CoreData
 import AltSourceKit
 import SwiftUI
@@ -15,17 +16,33 @@ import NukeUI
 import Nuke
 import UIKit
 
-// MARK: - Dynamic Visual Identity (White, Black, Ocean Blue + Settings Tint)
+// MARK: - Appearance-aware application colors
 enum AppStoreTheme {
-	nonisolated static let oceanBlue = Color(red: 0.00, green: 0.36, blue: 0.73) // #005BBB
-	nonisolated static let deepOcean = Color(red: 0.02, green: 0.16, blue: 0.36) // #05295C
-	nonisolated static let pureBlack = Color.black
-	nonisolated static let cardSurface = Color(red: 0.10, green: 0.11, blue: 0.13)
-	
-	static var dynamicAccent: Color {
-		let hex = UserDefaults.standard.string(forKey: "Feather.userTintColor") ?? "#005BBB"
-		return Color(hex: hex)
-	}
+    nonisolated static let oceanBlue = Color.accentColor
+    nonisolated static let deepOcean = Color(red: 0.02, green: 0.16, blue: 0.36)
+    nonisolated static let background = Color(uiColor: .systemGroupedBackground)
+    nonisolated static let pureBlack = background
+    nonisolated static let cardSurface = Color(uiColor: .secondarySystemGroupedBackground)
+    nonisolated static let controlSurface = Color(uiColor: .tertiarySystemFill)
+
+    nonisolated static var dynamicAccent: Color { Color.accentColor }
+
+    // Keep labels readable even when the wheel selects a very bright color.
+    nonisolated static func contrastingText(forHex hex: String) -> Color {
+        let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+        guard cleaned.count == 6, let value = UInt32(cleaned, radix: 16) else {
+            return .white
+        }
+        func channel(_ shift: Int) -> Double {
+            let component = Double((value >> shift) & 0xFF) / 255.0
+            return component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        return luminance > 0.179 ? .black : .white
+    }
 }
 
 // MARK: - Protected Sources Vault (IPABLACK + store-api)
@@ -684,7 +701,7 @@ final class AppStoreCacheManager: ObservableObject {
 		}
 	}
 	
-	func ensureFetched(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
+	func ensureFetched<S: Collection>(sources: S, viewModel: SourcesViewModel) async where S.Element == AltSource {
 		guard !isFetching else { return }
 		isFetching = true
 		
@@ -699,7 +716,7 @@ final class AppStoreCacheManager: ObservableObject {
 		isFetching = false
 	}
 	
-	func forceRefresh(sources: FetchedResults<AltSource>, viewModel: SourcesViewModel) async {
+	func forceRefresh<S: Collection>(sources: S, viewModel: SourcesViewModel) async where S.Element == AltSource {
 		guard !isFetching else { return }
 		isFetching = true
 		await fetchCoreReposDirectlyInParallel()
@@ -755,7 +772,7 @@ final class AppStoreCacheManager: ObservableObject {
 		}
 	}
 	
-	func rebuildCacheIfNeeded(sources: FetchedResults<AltSource>, repositoriesMap: [AltSource: ASRepository]) {
+	func rebuildCacheIfNeeded<S: Collection>(sources: S, repositoriesMap: [AltSource: ASRepository]) where S.Element == AltSource {
 		guard !isBuildingCache else { return }
 		isBuildingCache = true
 		
@@ -1175,15 +1192,16 @@ struct AppStore2026DetailView: View {
 		if let seller = appleMetadata?.sellerName, !seller.isEmpty {
 			return seller
 		}
-		if let dev = item.app.developerName, !dev.isEmpty {
+		if let dev = item.app.developer, !dev.isEmpty {
 			return dev
 		}
 		return "IPA BLACK"
 	}
 	
 	private var formattedSize: String {
-		let repoSize = item.app.size ?? item.app.versions?.first?.size ?? 0
-		let bytes = Int64(repoSize > 0 ? repoSize : (appleMetadata?.fileSizeBytes ?? 0))
+		let versionSize = (item.app.currentAppVersion?.size).flatMap { Int64(exactly: $0) }
+		let repoSize: Int64 = item.app.size ?? versionSize ?? 0
+		let bytes: Int64 = repoSize > 0 ? repoSize : (appleMetadata?.fileSizeBytes ?? 0)
 		guard bytes > 0 else { return "IPA" }
 		let formatter = ByteCountFormatter()
 		formatter.allowedUnits = [.useMB, .useGB]
@@ -1206,7 +1224,7 @@ struct AppStore2026DetailView: View {
 					VStack(alignment: .leading, spacing: 6) {
 						Text(item.app.currentName)
 							.font(.title2.bold())
-							.foregroundStyle(.white)
+							.foregroundStyle(.primary)
 							.lineLimit(2)
 						
 						Text(item.arabicSubtitle)
@@ -1225,7 +1243,7 @@ struct AppStore2026DetailView: View {
 				.padding(.horizontal, 18)
 				.padding(.top, 10)
 				
-				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
+				Divider().background(Color.primary.opacity(0.1)).padding(.horizontal, 18)
 				
 				ScrollView(.horizontal, showsIndicators: false) {
 					HStack(spacing: 0) {
@@ -1235,7 +1253,7 @@ struct AppStore2026DetailView: View {
 							bottomText: "★★★★★"
 						)
 						
-						Divider().frame(height: 36).background(Color.white.opacity(0.12))
+						Divider().frame(height: 36).background(Color.primary.opacity(0.12))
 						
 						AppStoreStatBadge(
 							topTitle: "العمر",
@@ -1243,7 +1261,7 @@ struct AppStore2026DetailView: View {
 							bottomText: "سنة"
 						)
 						
-						Divider().frame(height: 36).background(Color.white.opacity(0.12))
+						Divider().frame(height: 36).background(Color.primary.opacity(0.12))
 						
 						AppStoreStatBadge(
 							topTitle: "الفئة",
@@ -1251,7 +1269,7 @@ struct AppStore2026DetailView: View {
 							bottomText: "التصنيف"
 						)
 						
-						Divider().frame(height: 36).background(Color.white.opacity(0.12))
+						Divider().frame(height: 36).background(Color.primary.opacity(0.12))
 						
 						AppStoreStatBadge(
 							topTitle: "الحجم",
@@ -1264,12 +1282,12 @@ struct AppStore2026DetailView: View {
 				
 				// لا يظهر قسم لقطات الشاشة إذا كان التطبيق محذوفاً من متجر أبل ولا يملك لقطات شاشة
 				if !displayScreenshots.isEmpty || isLoadingMetadata {
-					Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
+					Divider().background(Color.primary.opacity(0.1)).padding(.horizontal, 18)
 					
 					VStack(alignment: .leading, spacing: 14) {
 						Text("معاينة")
 							.font(.title2.bold())
-							.foregroundStyle(.white)
+							.foregroundStyle(.primary)
 							.padding(.horizontal, 18)
 						
 						if !displayScreenshots.isEmpty {
@@ -1283,17 +1301,17 @@ struct AppStore2026DetailView: View {
 													.scaledToFit()
 											} else {
 												RoundedRectangle(cornerRadius: 20, style: .continuous)
-													.fill(Color(white: 0.14))
-													.overlay { ProgressView().tint(.white) }
+													.fill(AppStoreTheme.controlSurface)
+													.overlay { ProgressView().tint(AppStoreTheme.dynamicAccent) }
 											}
 										}
 										.processors([.resize(size: CGSize(width: 460, height: 920))])
 										.frame(width: min(UIScreen.main.bounds.width * 0.62, 280), height: 440)
-										.background(Color(white: 0.08))
+										.background(AppStoreTheme.controlSurface)
 										.clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 										.overlay(
 											RoundedRectangle(cornerRadius: 20, style: .continuous)
-												.stroke(Color.white.opacity(0.12), lineWidth: 0.6)
+												.stroke(Color.primary.opacity(0.12), lineWidth: 0.6)
 										)
 									}
 								}
@@ -1304,7 +1322,7 @@ struct AppStore2026DetailView: View {
 								HStack(spacing: 12) {
 									ForEach(0..<2, id: \.self) { _ in
 										RoundedRectangle(cornerRadius: 20, style: .continuous)
-											.fill(Color(white: 0.12))
+											.fill(AppStoreTheme.controlSurface)
 											.frame(width: min(UIScreen.main.bounds.width * 0.62, 280), height: 440)
 											.overlay {
 												ProgressView().tint(accentColor)
@@ -1317,13 +1335,13 @@ struct AppStore2026DetailView: View {
 					}
 				}
 				
-				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
+				Divider().background(Color.primary.opacity(0.1)).padding(.horizontal, 18)
 				
 				VStack(alignment: .leading, spacing: 10) {
 					HStack {
 						Text("ما الجديد")
 							.font(.title2.bold())
-							.foregroundStyle(.white)
+							.foregroundStyle(.primary)
 						Spacer()
 						Text("الإصدار \(item.app.currentVersion ?? "—")")
 							.font(.subheadline)
@@ -1332,23 +1350,23 @@ struct AppStore2026DetailView: View {
 					
 					Text(displayReleaseNotes)
 						.font(.system(size: 15))
-						.foregroundStyle(.white.opacity(0.9))
+						.foregroundStyle(Color.primary.opacity(0.9))
 						.lineSpacing(4)
 						.lineLimit(4)
 				}
 				.padding(.horizontal, 18)
 				
-				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
+				Divider().background(Color.primary.opacity(0.1)).padding(.horizontal, 18)
 				
 				XSignTranslatableDescription(text: displayDescription, accentColor: accentColor)
 				.padding(.horizontal, 18)
 				
-				Divider().background(Color.white.opacity(0.1)).padding(.horizontal, 18)
+				Divider().background(Color.primary.opacity(0.1)).padding(.horizontal, 18)
 				
 				VStack(alignment: .leading, spacing: 14) {
 					Text("المعلومات")
 						.font(.title2.bold())
-						.foregroundStyle(.white)
+						.foregroundStyle(.primary)
 					
 					AppStoreInfoRow(label: "المصدر", value: "IPA BLACK")
 					AppStoreInfoRow(label: "المطور", value: displayDeveloper)
@@ -1360,7 +1378,7 @@ struct AppStore2026DetailView: View {
 				.padding(.bottom, 36)
 			}
 		}
-		.background(Color.black.ignoresSafeArea())
+		.background(AppStoreTheme.background.ignoresSafeArea())
 		.navigationBarTitleDisplayMode(.inline)
 		.environment(\.layoutDirection, .rightToLeft)
 		.task {
@@ -1390,7 +1408,7 @@ struct AppStoreStatBadge: View {
 				.foregroundStyle(.secondary)
 			Text(mainValue)
 				.font(.system(size: 20, weight: .heavy, design: .rounded))
-				.foregroundStyle(.white.opacity(0.9))
+				.foregroundStyle(Color.primary.opacity(0.9))
 			Text(bottomText)
 				.font(.system(size: 11, weight: .medium))
 				.foregroundStyle(.secondary)
@@ -1413,10 +1431,10 @@ struct AppStoreInfoRow: View {
 				Spacer()
 				Text(value)
 					.font(.system(size: 14, weight: .medium))
-					.foregroundStyle(.white)
+					.foregroundStyle(.primary)
 					.lineLimit(1)
 			}
-			Divider().background(Color.white.opacity(0.08))
+			Divider().background(Color.primary.opacity(0.08))
 		}
 	}
 }
@@ -1596,7 +1614,7 @@ struct AppStoreTodayView: View {
 				}
 				.padding(.bottom, 105)
 			}
-			.background(Color.black.ignoresSafeArea())
+			.background(AppStoreTheme.background.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
@@ -1606,7 +1624,6 @@ struct AppStoreTodayView: View {
 			}
 		}
 		.environment(\.layoutDirection, .rightToLeft)
-		.preferredColorScheme(.dark)
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
@@ -1667,12 +1684,12 @@ struct SourcesView: View {
 								} label: {
 									Text("الكل")
 										.font(.subheadline.weight(.bold))
-										.foregroundStyle(_selectedAppCategory == nil ? .white : .white.opacity(0.85))
+										.foregroundStyle(_selectedAppCategory == nil ? AppStoreTheme.contrastingText(forHex: userTintHex) : Color.primary)
 										.padding(.horizontal, 18)
 										.padding(.vertical, 9)
 										.background(
 											Capsule(style: .continuous)
-												.fill(_selectedAppCategory == nil ? accentColor : Color(white: 0.14))
+												.fill(_selectedAppCategory == nil ? accentColor : AppStoreTheme.controlSurface)
 										)
 								}
 								.buttonStyle(.plain)
@@ -1687,12 +1704,12 @@ struct SourcesView: View {
 											Text(cat.rawValue)
 												.font(.subheadline.weight(.bold))
 										}
-										.foregroundStyle(.white)
+										.foregroundStyle(_selectedAppCategory == cat ? AppStoreTheme.contrastingText(forHex: userTintHex) : Color.primary)
 										.padding(.horizontal, 16)
 										.padding(.vertical, 9)
 										.background(
 											Capsule(style: .continuous)
-												.fill(_selectedAppCategory == cat ? accentColor : Color(white: 0.14))
+												.fill(_selectedAppCategory == cat ? accentColor : AppStoreTheme.controlSurface)
 										)
 									}
 									.buttonStyle(.plain)
@@ -1726,7 +1743,7 @@ struct SourcesView: View {
 						HStack {
 							Text(_selectedAppCategory?.rawValue ?? "جميع التطبيقات")
 								.font(.system(size: 22, weight: .bold))
-								.foregroundStyle(.white)
+								.foregroundStyle(.primary)
 							Spacer()
 						}
 						.padding(.horizontal, 18)
@@ -1742,7 +1759,7 @@ struct SourcesView: View {
 										.padding(.vertical, 8)
 									
 									Divider()
-										.background(Color.white.opacity(0.08))
+										.background(Color.primary.opacity(0.08))
 										.padding(.leading, 82)
 										.padding(.trailing, 18)
 								}
@@ -1753,7 +1770,7 @@ struct SourcesView: View {
 				}
 				.padding(.bottom, 100)
 			}
-			.background(Color.black.ignoresSafeArea())
+			.background(AppStoreTheme.background.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
@@ -1763,7 +1780,6 @@ struct SourcesView: View {
 			}
 		}
 		.environment(\.layoutDirection, .rightToLeft)
-		.preferredColorScheme(.dark)
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
@@ -1823,12 +1839,12 @@ struct AppStoreGamesView: View {
 								} label: {
 									Text("كل الألعاب")
 										.font(.subheadline.weight(.bold))
-										.foregroundStyle(.white)
+										.foregroundStyle(selectedGameCategory == nil ? AppStoreTheme.contrastingText(forHex: userTintHex) : Color.primary)
 										.padding(.horizontal, 18)
 										.padding(.vertical, 9)
 										.background(
 											Capsule(style: .continuous)
-												.fill(selectedGameCategory == nil ? accentColor : Color(white: 0.14))
+												.fill(selectedGameCategory == nil ? accentColor : AppStoreTheme.controlSurface)
 										)
 								}
 								.buttonStyle(.plain)
@@ -1843,12 +1859,12 @@ struct AppStoreGamesView: View {
 											Text(cat.rawValue)
 												.font(.subheadline.weight(.bold))
 										}
-										.foregroundStyle(.white)
+										.foregroundStyle(selectedGameCategory == cat ? AppStoreTheme.contrastingText(forHex: userTintHex) : Color.primary)
 										.padding(.horizontal, 16)
 										.padding(.vertical, 9)
 										.background(
 											Capsule(style: .continuous)
-												.fill(selectedGameCategory == cat ? accentColor : Color(white: 0.14))
+												.fill(selectedGameCategory == cat ? accentColor : AppStoreTheme.controlSurface)
 										)
 									}
 									.buttonStyle(.plain)
@@ -1888,7 +1904,7 @@ struct AppStoreGamesView: View {
 						HStack {
 							Text(selectedGameCategory?.rawValue ?? "جميع الألعاب")
 								.font(.system(size: 22, weight: .bold))
-								.foregroundStyle(.white)
+								.foregroundStyle(.primary)
 							Spacer()
 						}
 						.padding(.horizontal, 18)
@@ -1903,7 +1919,7 @@ struct AppStoreGamesView: View {
 										.padding(.vertical, 8)
 									
 									Divider()
-										.background(Color.white.opacity(0.08))
+										.background(Color.primary.opacity(0.08))
 										.padding(.leading, 82)
 										.padding(.trailing, 18)
 								}
@@ -1914,7 +1930,7 @@ struct AppStoreGamesView: View {
 				}
 				.padding(.bottom, 100)
 			}
-			.background(Color.black.ignoresSafeArea())
+			.background(AppStoreTheme.background.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
@@ -1924,7 +1940,6 @@ struct AppStoreGamesView: View {
 			}
 		}
 		.environment(\.layoutDirection, .rightToLeft)
-		.preferredColorScheme(.dark)
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
@@ -1959,7 +1974,7 @@ struct AppStoreSearchView: View {
 							HStack(spacing: 6) {
 								Text("تصفح")
 									.font(.system(size: 22, weight: .bold))
-									.foregroundStyle(.white)
+									.foregroundStyle(.primary)
 								Image(systemName: "chevron.left")
 									.font(.system(size: 16, weight: .bold))
 									.foregroundStyle(.secondary)
@@ -2001,7 +2016,7 @@ struct AppStoreSearchView: View {
 										.foregroundStyle(.secondary)
 									Text("لا توجد نتائج لـ \"\(searchText)\"")
 										.font(.headline)
-										.foregroundStyle(.white)
+										.foregroundStyle(.primary)
 								}
 								.frame(maxWidth: .infinity)
 								.padding(.top, 60)
@@ -2021,7 +2036,7 @@ struct AppStoreSearchView: View {
 				}
 				.padding(.bottom, 110)
 			}
-			.background(Color.black.ignoresSafeArea())
+			.background(AppStoreTheme.background.ignoresSafeArea())
 			.toolbar(.hidden, for: .navigationBar)
 			.searchable(
 				text: $searchText,
@@ -2036,7 +2051,6 @@ struct AppStoreSearchView: View {
 			}
 		}
 		.environment(\.layoutDirection, .rightToLeft)
-		.preferredColorScheme(.dark)
 		.task {
 			await cache.ensureFetched(sources: _sources, viewModel: viewModel)
 		}
@@ -2087,7 +2101,7 @@ struct AppStore2026TopHeader: View {
 		HStack(alignment: .center) {
 			Text(title)
 				.font(.system(size: 34, weight: .heavy))
-				.foregroundStyle(.white)
+				.foregroundStyle(.primary)
 			
 			Spacer()
 			
@@ -2113,7 +2127,7 @@ struct AppStoreAccountAppIconButton: View {
                 .clipShape(Circle())
                 .overlay {
                     Circle()
-                        .stroke(Color.white.opacity(0.28), lineWidth: 1.1)
+                        .stroke(Color.primary.opacity(0.28), lineWidth: 1.1)
                 }
         }
         .buttonStyle(.plain)
@@ -2141,7 +2155,7 @@ struct TodayLiveEventHeroCard: View {
 				VStack(alignment: .leading, spacing: 2) {
 					Text(outerTitle)
 						.font(.system(size: 22, weight: .heavy))
-						.foregroundStyle(.white)
+						.foregroundStyle(.primary)
 					if let outerSubtitle {
 						Text(outerSubtitle)
 							.font(.subheadline)
@@ -2319,11 +2333,11 @@ struct TodayTwoRowIconGridCard: View {
 						if outerPuzzleIcon {
 							Image(systemName: "puzzlepiece.extension.fill")
 								.font(.system(size: 20))
-								.foregroundStyle(Color(red: 0.35, green: 0.72, blue: 0.98))
+								.foregroundStyle(AppStoreTheme.dynamicAccent)
 						}
 						Text(outerTitle)
 							.font(.system(size: 22, weight: .heavy))
-							.foregroundStyle(.white)
+							.foregroundStyle(.primary)
 					}
 					if let outerSubtitle {
 						Text(outerSubtitle)
@@ -2426,7 +2440,7 @@ struct TodayFourAppsListCard: View {
 				VStack(alignment: .leading, spacing: 3) {
 					Text(outerTitle)
 						.font(.system(size: 22, weight: .heavy))
-						.foregroundStyle(.white)
+						.foregroundStyle(.primary)
 					if let outerSubtitle {
 						Text(outerSubtitle)
 							.font(.subheadline)
@@ -2443,7 +2457,7 @@ struct TodayFourAppsListCard: View {
 						.foregroundStyle(.secondary)
 					Text(innerTitle)
 						.font(.system(size: 26, weight: .heavy))
-						.foregroundStyle(.white)
+						.foregroundStyle(.primary)
 						.lineLimit(2)
 						.multilineTextAlignment(.leading)
 				}
@@ -2459,7 +2473,7 @@ struct TodayFourAppsListCard: View {
 						
 						if index < min(items.count, 4) - 1 {
 							Divider()
-								.background(Color.white.opacity(0.08))
+								.background(Color.primary.opacity(0.08))
 								.padding(.leading, 70)
 						}
 					}
@@ -2473,7 +2487,7 @@ struct TodayFourAppsListCard: View {
 			)
 			.overlay(
 				RoundedRectangle(cornerRadius: 28, style: .continuous)
-					.stroke(Color.white.opacity(0.07), lineWidth: 0.6)
+					.stroke(Color.primary.opacity(0.07), lineWidth: 0.6)
 			)
 		}
 	}
@@ -2710,7 +2724,7 @@ struct AppStore2026SettingsPopup: View {
 										VStack(alignment: .leading, spacing: 2) {
 											Text(source.name ?? "مصدر مضاف")
 												.font(.body.weight(.bold))
-												.foregroundStyle(.white)
+												.foregroundStyle(.primary)
 											Text("مصدر مفعل • الرابط مخفي للحماية")
 												.font(.caption2)
 												.foregroundStyle(.secondary)
@@ -2828,15 +2842,15 @@ struct AppStore2026DownloadButton: View {
 			case .downloading:
 				HStack(spacing: 5) {
 					ProgressView()
-						.tint(.white)
+						.tint(AppStoreTheme.contrastingText(forHex: userTintHex))
 						.scaleEffect(0.72)
 					Text("\(progressPercent)%")
 						.font(.system(size: 12, weight: .heavy, design: .rounded))
 						.monospacedDigit()
-						.foregroundStyle(.white)
+						.foregroundStyle(AppStoreTheme.contrastingText(forHex: userTintHex))
 				}
 				.frame(width: 82, height: 32)
-				.background(Capsule().fill(accentColor.opacity(0.85)))
+				.background(Capsule().fill(accentColor))
 				
 			case .signing:
 				HStack(spacing: 4) {
@@ -2845,7 +2859,7 @@ struct AppStore2026DownloadButton: View {
 					Text("توقيع...")
 						.font(.system(size: 11, weight: .bold))
 				}
-				.foregroundStyle(.white)
+				.foregroundStyle(AppStoreTheme.contrastingText(forHex: userTintHex))
 				.frame(width: 82, height: 32)
 				.background(Capsule().fill(accentColor))
 				
@@ -2864,11 +2878,11 @@ struct AppStore2026DownloadButton: View {
 				VStack(spacing: 3) {
 					Text("تنزيل")
 						.font(.system(size: 15, weight: .bold))
-						.foregroundStyle(isLightPill ? .white : accentColor)
+						.foregroundStyle(AppStoreTheme.contrastingText(forHex: userTintHex))
 						.frame(width: 78, height: 32)
 						.background(
 							Capsule(style: .continuous)
-								.fill(isLightPill ? Color.white.opacity(0.24) : Color(white: 0.18))
+								.fill(accentColor)
 						)
 					
 					Text("الشراء داخل التطبيق")
@@ -2897,7 +2911,7 @@ struct AppStore2026AppRow: View {
 			VStack(alignment: .leading, spacing: 3) {
 				Text(item.app.currentName)
 					.font(.system(size: 16, weight: .bold))
-					.foregroundStyle(.white)
+					.foregroundStyle(.primary)
 					.lineLimit(1)
 				Text(item.arabicSubtitle)
 					.font(.system(size: 13))
@@ -2985,7 +2999,7 @@ struct AppStore2026ThreeRowSection: View {
 				VStack(alignment: .leading, spacing: 2) {
 					Text(title)
 						.font(.system(size: 21, weight: .bold))
-						.foregroundStyle(.white)
+						.foregroundStyle(.primary)
 					Text(subtitle)
 						.font(.caption)
 						.foregroundStyle(.secondary)
@@ -3030,7 +3044,7 @@ struct AppStore2026FeaturedBanner: View {
 				.foregroundStyle(Color(hex: userTintHex))
 			Text(item.app.currentName)
 				.font(.title3.weight(.bold))
-				.foregroundStyle(.white)
+				.foregroundStyle(.primary)
 				.lineLimit(1)
 			Text(item.arabicSubtitle)
 				.font(.subheadline)
@@ -3097,7 +3111,7 @@ struct AppStore2026SearchResultCard: View {
 										.scaledToFill()
 								} else {
 									RoundedRectangle(cornerRadius: 12, style: .continuous)
-										.fill(Color(white: 0.16))
+										.fill(AppStoreTheme.controlSurface)
 								}
 							}
 							.processors([.resize(size: CGSize(width: 220, height: 380))])
@@ -3155,7 +3169,7 @@ struct AppStore2026CategoryListView: View {
 			}
 			.padding(18)
 		}
-		.background(Color.black.ignoresSafeArea())
+		.background(AppStoreTheme.background.ignoresSafeArea())
 		.navigationTitle(category.rawValue)
 		.environment(\.layoutDirection, .rightToLeft)
 	}
@@ -3195,7 +3209,7 @@ struct AppStoreIconView: View {
 		.clipShape(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous))
 		.overlay(
 			RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-				.stroke(Color.white.opacity(0.14), lineWidth: 0.6)
+				.stroke(Color.primary.opacity(0.14), lineWidth: 0.6)
 		)
 		.task {
 			if (url == nil || isFallbackGitHubIcon) && !appName.isEmpty && !AppStoreLiveMetadataBridge.hasExtractedGitHubIcon(url) {
@@ -3212,7 +3226,7 @@ struct AppStoreIconView: View {
 	
 	private var placeholder: some View {
 		RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-			.fill(Color(white: 0.18))
+			.fill(AppStoreTheme.controlSurface)
 	}
 }
 
@@ -3227,7 +3241,7 @@ struct AppStore2026EmptyState: View {
 				.scaleEffect(1.3)
 			Text("جاري مزامنة المتجر بسرعة فائقة...")
 				.font(.subheadline.weight(.semibold))
-				.foregroundStyle(.white)
+				.foregroundStyle(.primary)
 		}
 		.frame(maxWidth: .infinity)
 		.padding(36)
@@ -3288,7 +3302,7 @@ private struct XSignDescriptionContent: View {
 
             Text(verbatim: visibleText)
                 .font(.body)
-                .foregroundStyle(.white.opacity(0.88))
+                .foregroundStyle(Color.primary.opacity(0.88))
                 .lineSpacing(5)
                 .lineLimit(expanded ? nil : 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
