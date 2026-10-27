@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CryptoKit
 import CoreData
 import AltSourceKit
 import SwiftUI
@@ -87,6 +88,7 @@ actor AppStoreLiveMetadataBridge {
 	static let shared = AppStoreLiveMetadataBridge()
 	
 	private var memoryCache: [String: AppleStoreRichMetadata] = [:]
+    private var metadataOrder: [String] = []
 	private var negativeCache: Set<String> = []
 	private var inFlightTasks: [String: Task<AppleStoreRichMetadata?, Never>] = [:]
 	
@@ -123,7 +125,7 @@ actor AppStoreLiveMetadataBridge {
 		let diskFile = Self.diskCacheDir.appendingPathComponent("\(cacheKey).json")
 		if let data = try? Data(contentsOf: diskFile),
 		   let decoded = try? JSONDecoder().decode(AppleStoreRichMetadata.self, from: data) {
-			memoryCache[cacheKey] = decoded
+			storeMetadata(decoded, for: cacheKey)
 			return decoded
 		}
 		
@@ -131,6 +133,7 @@ actor AppStoreLiveMetadataBridge {
 			return await existingTask.value
 		}
 		
+        guard !Task.isCancelled, inFlightTasks.count < 4 else { return nil }
 		let task = Task<AppleStoreRichMetadata?, Never> {
 			// الفحص يتم حصرياً عبر الـ Bundle ID؛ إذا كان التطبيق محذوفاً من المتجر نتوقف فوراً ولا نجلب صوراً عشوائية بالاسم
 			guard let bID = bundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -163,16 +166,27 @@ actor AppStoreLiveMetadataBridge {
 		inFlightTasks.removeValue(forKey: cacheKey)
 		
 		if let result {
-			memoryCache[cacheKey] = result
+			storeMetadata(result, for: cacheKey)
 			if let encodedData = try? JSONEncoder().encode(result) {
 				try? encodedData.write(to: diskFile, options: .atomic)
 			}
 		} else {
+            if negativeCache.count >= 256 { negativeCache.removeAll(keepingCapacity: true) }
 			negativeCache.insert(cacheKey)
 		}
 		return result
 	}
 	
+    private func storeMetadata(_ metadata: AppleStoreRichMetadata, for key: String) {
+        if memoryCache[key] == nil {
+            if metadataOrder.count >= 128 {
+                memoryCache.removeValue(forKey: metadataOrder.removeFirst())
+            }
+            metadataOrder.append(key)
+        }
+        memoryCache[key] = metadata
+    }
+
 	private nonisolated static func queryiTunes(urlString: String) async -> AppleStoreRichMetadata? {
 		guard let url = URL(string: urlString) else { return nil }
 		do {
@@ -392,7 +406,6 @@ enum AppStoreBilingualEngine {
 struct AppStoreAppItem: Identifiable, Hashable, Sendable {
 	let id: String
 	let sourceURL: URL?
-	let repository: ASRepository
 	let app: ASRepository.App
 	let category: AppStore2026Category
 	let isGame: Bool
@@ -400,10 +413,9 @@ struct AppStoreAppItem: Identifiable, Hashable, Sendable {
 	let searchIndexTokens: String
 	let screenshots: [URL]
 	
-	init(id: String, sourceURL: URL?, repository: ASRepository, app: ASRepository.App) {
+	init(id: String, sourceURL: URL?, repository _: ASRepository, app: ASRepository.App) {
 		self.id = id
 		self.sourceURL = sourceURL
-		self.repository = repository
 		self.app = app
 		
 		let classified = AppStore2026Category.strictlyClassify(app: app)
@@ -435,7 +447,7 @@ struct AppStoreAppItem: Identifiable, Hashable, Sendable {
 }
 
 // MARK: - Editorial Instruction Model
-struct TodayEditorialInstruction: Identifiable {
+struct TodayEditorialInstruction: Identifiable, Sendable {
 	let id: String
 	let badge: String
 	let title: String
@@ -603,41 +615,61 @@ enum AppStore2026Category: String, CaseIterable, Identifiable, Sendable {
 	}
 }
 
-// MARK: - Instant Store Cache Manager (Strictly Separates IPABLACK for Today View)
+// MARK: - Cached catalog shown before background refresh
+private struct XSignCatalogSnapshot: Sendable {
+    var ipablackItems: [AppStoreAppItem] = []
+    var ipablackEditorialNews: [TodayEditorialInstruction] = []
+    var allCombinedItems: [AppStoreAppItem] = []
+    var pureAppsOnly: [AppStoreAppItem] = []
+    var pureGamesOnly: [AppStoreAppItem] = []
+    var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] = [:]
+    var includesIPABlack = false
+}
+
 @MainActor
 final class AppStoreCacheManager: ObservableObject {
-	static let shared = AppStoreCacheManager()
-	
-	@Published private(set) var ipablackItems: [AppStoreAppItem] = []
-	@Published private(set) var ipablackEditorialNews: [TodayEditorialInstruction] = []
-	
-	@Published private(set) var allCombinedItems: [AppStoreAppItem] = []
-	@Published private(set) var pureAppsOnly: [AppStoreAppItem] = []
-	@Published private(set) var pureGamesOnly: [AppStoreAppItem] = []
-	@Published private(set) var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] = [:]
-	
-	private var isFetching = false
-	private var isBuildingCache = false
-	private var directLoadedRepos: [String: ASRepository] = [:]
-	
-	private nonisolated static var diskCacheDirectory: URL {
-		let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-			.appendingPathComponent("XSignInstantStoreCache_v2", isDirectory: true)
-		try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-		return dir
-	}
-	
-	private nonisolated static let fastRepoSession: URLSession = {
-		let config = URLSessionConfiguration.default
-		config.networkServiceType = .responsiveData
-		config.httpMaximumConnectionsPerHost = 12
-		config.timeoutIntervalForRequest = 15
-		config.requestCachePolicy = .reloadIgnoringLocalCacheData
-		return URLSession(configuration: config)
-	}()
-	
-	// تنظيف JSON من أي روابط فارغة "" قد تمنع AltSourceKit من قراءة سورس IPABLACK
-	nonisolated static func sanitizeRepoJSONData(_ rawData: Data) -> Data {
+    static let shared = AppStoreCacheManager()
+
+    @Published private var catalog = XSignCatalogSnapshot()
+    var ipablackItems: [AppStoreAppItem] { catalog.ipablackItems }
+    var ipablackEditorialNews: [TodayEditorialInstruction] { catalog.ipablackEditorialNews }
+    var allCombinedItems: [AppStoreAppItem] { catalog.allCombinedItems }
+    var pureAppsOnly: [AppStoreAppItem] { catalog.pureAppsOnly }
+    var pureGamesOnly: [AppStoreAppItem] { catalog.pureGamesOnly }
+    var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] { catalog.itemsByCategory }
+
+    private var directLoadedRepos: [String: ASRepository] = [:]
+    private var repoFingerprints: [String: Data] = [:]
+    private var customSnapshot: [(URL?, String?, ASRepository)] = []
+    private var diskSnapshotTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshAgain = false
+    private var nextRefreshAllowed = Date.distantPast
+    private var indexGeneration: UInt64 = 0
+    private var indexTask: Task<XSignCatalogSnapshot?, Never>?
+
+    private nonisolated static let coreTargets: [(urlStr: String, id: String, file: String, seed: String)] = [
+        (ProtectedSourcesVault.ipaBlackURLString, "xsign.core.ipablack", "ipablack_cache.json", "XSignLaunchIPABlack"),
+        (ProtectedSourcesVault.storeAPIURLString, "xsign.core.storeapi", "storeapi_cache.json", "XSignLaunchStoreAPI")
+    ]
+
+    private nonisolated static var diskCacheDirectory: URL {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("XSignInstantStoreCache_v2", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private nonisolated static let fastRepoSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpMaximumConnectionsPerHost = 2
+        config.timeoutIntervalForRequest = 12
+        config.timeoutIntervalForResource = 20
+        config.urlCache = nil
+        return URLSession(configuration: config)
+    }()
+
+    nonisolated static func sanitizeRepoJSONData(_ rawData: Data) -> Data {
 		guard var dict = (try? JSONSerialization.jsonObject(with: rawData)) as? [String: Any] else {
 			return rawData
 		}
@@ -671,143 +703,229 @@ final class AppStoreCacheManager: ObservableObject {
 		
 		return (try? JSONSerialization.data(withJSONObject: dict)) ?? rawData
 	}
-	
-	init() {
-		loadInstantDiskSnapshot()
-	}
-	
-	private func loadInstantDiskSnapshot() {
-		Task.detached(priority: .userInitiated) {
-			var snapshotRepos: [(URL?, String?, ASRepository)] = []
-			let decoder = JSONDecoder()
-			
-			let cachedFiles: [(urlStr: String, id: String, file: String)] = [
-				(ProtectedSourcesVault.ipaBlackURLString, "xsign.core.ipablack", "ipablack_cache.json"),
-				(ProtectedSourcesVault.storeAPIURLString, "xsign.core.storeapi", "storeapi_cache.json")
-			]
-			
-			for entry in cachedFiles {
-				let fileURL = Self.diskCacheDirectory.appendingPathComponent(entry.file)
-				if let rawData = try? Data(contentsOf: fileURL, options: .mappedIfSafe) {
-					let cleanData = Self.sanitizeRepoJSONData(rawData)
-					if let repo = try? decoder.decode(ASRepository.self, from: cleanData) {
-						snapshotRepos.append((URL(string: entry.urlStr), entry.id, repo))
-					}
-				}
-			}
-			
-			guard !snapshotRepos.isEmpty else { return }
-			await Self.processAndPublish(snapshot: snapshotRepos)
-		}
-	}
-	
-	func ensureFetched<S: Collection>(sources: S, viewModel: SourcesViewModel) async where S.Element == AltSource {
-		guard !isFetching else { return }
-		isFetching = true
-		
-		await fetchCoreReposDirectlyInParallel()
-		
-		let customSources = sources.filter { !ProtectedSourcesVault.isHiddenCoreSource($0) }
-		if !customSources.isEmpty {
-			await viewModel.fetchSources(sources)
-			rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
-		}
-		
-		isFetching = false
-	}
-	
-	func forceRefresh<S: Collection>(sources: S, viewModel: SourcesViewModel) async where S.Element == AltSource {
-		guard !isFetching else { return }
-		isFetching = true
-		await fetchCoreReposDirectlyInParallel()
-		await viewModel.fetchSources(sources, refresh: true)
-		rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
-		isFetching = false
-	}
-	
-	private func fetchCoreReposDirectlyInParallel() async {
-		let targets: [(urlStr: String, id: String, cacheFile: String)] = [
-			(ProtectedSourcesVault.ipaBlackURLString, "xsign.core.ipablack", "ipablack_cache.json"),
-			(ProtectedSourcesVault.storeAPIURLString, "xsign.core.storeapi", "storeapi_cache.json")
-		]
-		
-		await withTaskGroup(of: (String, String, URL, ASRepository)?.self) { group in
-			for target in targets {
-				group.addTask(priority: .userInitiated) {
-					let bustURLString = "\(target.urlStr)?t=\(Int(Date().timeIntervalSince1970))"
-					guard let url = URL(string: bustURLString),
-						  let baseTargetURL = URL(string: target.urlStr) else { return nil }
-					var request = URLRequest(url: url)
-					request.setValue("X-SIGN/2.0 (FastRepoFetch)", forHTTPHeaderField: "User-Agent")
-					
-					do {
-						let (rawData, _) = try await Self.fastRepoSession.data(for: request)
-						let cleanData = Self.sanitizeRepoJSONData(rawData)
-						let cachePath = Self.diskCacheDirectory.appendingPathComponent(target.cacheFile)
-						try? cleanData.write(to: cachePath, options: .atomic)
-						let repo = try JSONDecoder().decode(ASRepository.self, from: cleanData)
-						return (target.urlStr, target.id, baseTargetURL, repo)
-					} catch {
-						return nil
-					}
-				}
-			}
-			
-			for await result in group {
-				if let (urlStr, _, _, repo) = result {
-					directLoadedRepos[urlStr] = repo
-				}
-			}
-		}
-		
-		var finalSnapshot: [(URL?, String?, ASRepository)] = []
-		if let ipaRepo = directLoadedRepos[ProtectedSourcesVault.ipaBlackURLString] {
-			finalSnapshot.append((URL(string: ProtectedSourcesVault.ipaBlackURLString), "xsign.core.ipablack", ipaRepo))
-		}
-		if let storeRepo = directLoadedRepos[ProtectedSourcesVault.storeAPIURLString] {
-			finalSnapshot.append((URL(string: ProtectedSourcesVault.storeAPIURLString), "xsign.core.storeapi", storeRepo))
-		}
-		if !finalSnapshot.isEmpty {
-			await Self.processAndPublish(snapshot: finalSnapshot)
-		}
-	}
-	
-	func rebuildCacheIfNeeded<S: Collection>(sources: S, repositoriesMap: [AltSource: ASRepository]) where S.Element == AltSource {
-		guard !isBuildingCache else { return }
-		isBuildingCache = true
-		
-		var combinedSnapshot: [(URL?, String?, ASRepository)] = []
-		
-		if let ipaRepo = directLoadedRepos[ProtectedSourcesVault.ipaBlackURLString] {
-			combinedSnapshot.append((URL(string: ProtectedSourcesVault.ipaBlackURLString), "xsign.core.ipablack", ipaRepo))
-		}
-		if let storeRepo = directLoadedRepos[ProtectedSourcesVault.storeAPIURLString] {
-			combinedSnapshot.append((URL(string: ProtectedSourcesVault.storeAPIURLString), "xsign.core.storeapi", storeRepo))
-		}
-		
-		for source in sources {
-			if let repo = repositoriesMap[source] {
-				let urlStr = source.sourceURL?.absoluteString ?? ""
-				if directLoadedRepos[urlStr] == nil {
-					combinedSnapshot.append((source.sourceURL, source.identifier, repo))
-				}
-			}
-		}
-		
-		guard !combinedSnapshot.isEmpty else {
-			isBuildingCache = false
-			return
-		}
-		
-		Task.detached(priority: .userInitiated) {
-			await Self.processAndPublish(snapshot: combinedSnapshot)
-			await MainActor.run {
-				AppStoreCacheManager.shared.isBuildingCache = false
-			}
-		}
-	}
-	
-	private nonisolated static func processAndPublish(snapshot: [(URL?, String?, ASRepository)]) async {
+
+    private nonisolated static func decodeRepository(_ data: Data) -> ASRepository? {
+        if let repo = try? JSONDecoder().decode(ASRepository.self, from: data) { return repo }
+        return try? JSONDecoder().decode(ASRepository.self, from: sanitizeRepoJSONData(data))
+    }
+
+    // Only this bounded first page is read during initialization, never a full catalog.
+    init() {
+        var preview: [(URL?, String?, ASRepository)] = []
+        for target in Self.coreTargets {
+            let disk = Self.diskCacheDirectory.appendingPathComponent("preview_" + target.file)
+            let bundle = Bundle.main.url(forResource: target.seed, withExtension: "json")
+            for candidate in [Optional(disk), bundle].compactMap({ $0 }) {
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: candidate.path),
+                      let size = attributes[.size] as? NSNumber, size.intValue <= 131_072,
+                      let data = try? Data(contentsOf: candidate, options: .mappedIfSafe),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let apps = object["apps"] as? [Any], apps.count <= 24,
+                      let repo = Self.decodeRepository(data) else { continue }
+                directLoadedRepos[target.urlStr] = repo
+                preview.append((URL(string: target.urlStr), target.id, repo))
+                break
+            }
+        }
+        if !preview.isEmpty, let snapshot = Self.buildSnapshot(snapshot: preview, previousItems: []) {
+            catalog = snapshot
+        }
+        loadInstantDiskSnapshot()
+    }
+
+    private func loadInstantDiskSnapshot() {
+        diskSnapshotTask = Task { @MainActor [weak self] in
+            let cached = await Task.detached(priority: .userInitiated) {
+                var entries: [(String, ASRepository, Data)] = []
+                for target in Self.coreTargets {
+                    let path = Self.diskCacheDirectory.appendingPathComponent(target.file)
+                    guard let data = try? Data(contentsOf: path, options: .mappedIfSafe),
+                          let repo = Self.decodeRepository(data) else { continue }
+                    entries.append((target.urlStr, repo, Data(SHA256.hash(data: data))))
+                }
+                return entries
+            }.value
+            guard let self else { return }
+            for (url, repo, digest) in cached {
+                self.directLoadedRepos[url] = repo
+                self.repoFingerprints[url] = digest
+            }
+            if !cached.isEmpty { self.scheduleSnapshot(priority: .userInitiated) }
+        }
+    }
+
+    func ensureFetched<S: Collection>(sources: S, viewModel: SourcesViewModel) async where S.Element == AltSource {
+        await refresh(sources: Array(sources), viewModel: viewModel, force: false)
+    }
+
+    func forceRefresh<S: Collection>(sources: S, viewModel: SourcesViewModel) async where S.Element == AltSource {
+        await refresh(sources: Array(sources), viewModel: viewModel, force: true)
+    }
+
+    private func refresh(sources: [AltSource], viewModel: SourcesViewModel, force: Bool) async {
+        if let running = refreshTask {
+            if force { refreshAgain = true }
+            await running.value
+            return
+        }
+        let custom = sources.filter { !ProtectedSourcesVault.isHiddenCoreSource($0) }
+        let hasNewSources = custom.contains { viewModel.sources[$0] == nil }
+        guard force || hasNewSources || Date() >= nextRefreshAllowed else {
+            rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
+            return
+        }
+        // A tab disappearing must not cancel the shared catalog download.
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.refreshTask = nil }
+            await self.diskSnapshotTask?.value
+            var mustRefresh = force
+            repeat {
+                self.refreshAgain = false
+                let succeeded = await self.fetchCoreReposDirectlyInParallel()
+                if !custom.isEmpty {
+                    await viewModel.fetchSources(custom, refresh: mustRefresh, batchSize: 2)
+                }
+                self.rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
+                self.nextRefreshAllowed = Date().addingTimeInterval(succeeded ? 60 : 10)
+                mustRefresh = true
+            } while self.refreshAgain && !Task.isCancelled
+        }
+        refreshTask = task
+        await task.value
+    }
+
+    private func fetchCoreReposDirectlyInParallel() async -> Bool {
+        var succeeded = false
+        await withTaskGroup(of: (String, ASRepository?, Data?)?.self) { group in
+            for target in Self.coreTargets {
+                let knownDigest = repoFingerprints[target.urlStr]
+                group.addTask(priority: .utility) {
+                    guard let url = URL(string: target.urlStr) else { return nil }
+                    let tagKey = "XSign.catalog.etag." + target.file
+                    var request = URLRequest(url: url)
+                    request.setValue("X-SIGN/2.0", forHTTPHeaderField: "User-Agent")
+                    if knownDigest != nil, let tag = UserDefaults.standard.string(forKey: tagKey) {
+                        request.setValue(tag, forHTTPHeaderField: "If-None-Match")
+                    }
+                    do {
+                        let (data, response) = try await Self.fastRepoSession.data(for: request)
+                        guard let http = response as? HTTPURLResponse else { return nil }
+                        if http.statusCode == 304, knownDigest != nil {
+                            return (target.urlStr, nil, nil)
+                        }
+                        guard (200..<300).contains(http.statusCode) else { return nil }
+                        // Decoding, hashing, and disk writes stay off the main actor.
+                        return await Task.detached(priority: .utility) { () -> (String, ASRepository?, Data?)? in
+                            let digest = Data(SHA256.hash(data: data))
+                            if knownDigest == digest { return (target.urlStr, nil, nil) }
+                            guard let repo = Self.decodeRepository(data) else { return nil }
+                            let cache = Self.diskCacheDirectory.appendingPathComponent(target.file)
+                            try? data.write(to: cache, options: .atomic)
+                            if let preview = Self.makeLaunchPreview(data) {
+                                try? preview.write(to: Self.diskCacheDirectory.appendingPathComponent("preview_" + target.file), options: .atomic)
+                            }
+                            if let tag = http.value(forHTTPHeaderField: "ETag") {
+                                UserDefaults.standard.set(tag, forKey: tagKey)
+                            } else {
+                                UserDefaults.standard.removeObject(forKey: tagKey)
+                            }
+                            return (target.urlStr, Optional(repo), Optional(digest))
+                        }.value
+                    } catch { return nil }
+                }
+            }
+            for await result in group {
+                guard let (url, repo, digest) = result else { continue }
+                succeeded = true
+                if let repo, let digest {
+                    directLoadedRepos[url] = repo
+                    repoFingerprints[url] = digest
+                    // Publish the first completed source without waiting for a slower one.
+                    scheduleSnapshot(priority: .utility)
+                }
+            }
+        }
+        return succeeded
+    }
+
+    func rebuildCacheIfNeeded<S: Collection>(sources: S, repositoriesMap: [AltSource: ASRepository]) where S.Element == AltSource {
+        let next: [(URL?, String?, ASRepository)] = sources.compactMap { source in
+            guard !ProtectedSourcesVault.isHiddenCoreSource(source), let repo = repositoriesMap[source] else { return nil }
+            return (source.sourceURL, source.identifier, repo)
+        }
+        let unchanged = next.count == customSnapshot.count && zip(next, customSnapshot).allSatisfy { left, right in
+            left.0 == right.0 && left.1 == right.1 && left.2 == right.2
+        }
+        guard !unchanged else { return }
+        customSnapshot = next
+        scheduleSnapshot(priority: .utility)
+    }
+
+    private func scheduleSnapshot(priority: TaskPriority) {
+        var entries = customSnapshot
+        for target in Self.coreTargets {
+            if let repo = directLoadedRepos[target.urlStr] {
+                entries.append((URL(string: target.urlStr), target.id, repo))
+            }
+        }
+        guard !entries.isEmpty else { return }
+        indexGeneration &+= 1
+        let generation = indexGeneration
+        let input = entries
+        let previous = allCombinedItems
+        indexTask?.cancel()
+        let worker = Task.detached(priority: priority) {
+            Self.buildSnapshot(snapshot: input, previousItems: previous)
+        }
+        indexTask = worker
+        Task { @MainActor [weak self] in
+            guard let next = await worker.value, let self, self.indexGeneration == generation else { return }
+            var snapshot = next
+            if !snapshot.includesIPABlack {
+                snapshot.ipablackItems = self.catalog.ipablackItems
+                snapshot.ipablackEditorialNews = self.catalog.ipablackEditorialNews
+            }
+            self.catalog = snapshot
+            self.indexTask = nil
+        }
+    }
+
+    private nonisolated static func makeLaunchPreview(_ data: Data) -> Data? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let apps = root["apps"] as? [[String: Any]], !apps.isEmpty else { return nil }
+        let rootKeys: Set<String> = ["name", "identifier", "iconURL", "tintColor", "news"]
+        let appKeys: Set<String> = ["name", "bundleIdentifier", "subtitle", "localizedDescription", "developerName", "iconURL", "downloadURL", "version", "size", "category", "versions", "screenshots", "screenshotURLs"]
+        var preview = root.filter { rootKeys.contains($0.key) }
+        var page = apps.prefix(24).map { app -> [String: Any] in
+            var item = app.filter { appKeys.contains($0.key) }
+            for key in ["subtitle", "localizedDescription"] {
+                if let text = item[key] as? String { item[key] = String(text.prefix(800)) }
+            }
+            if let versions = item["versions"] as? [Any] { item["versions"] = Array(versions.prefix(1)) }
+            if let urls = item["screenshotURLs"] as? [Any] { item["screenshotURLs"] = Array(urls.prefix(3)) }
+            return item
+        }
+        if let news = preview["news"] as? [Any] { preview["news"] = Array(news.prefix(2)) }
+        while !page.isEmpty {
+            preview["apps"] = page
+            if let encoded = try? JSONSerialization.data(withJSONObject: preview), encoded.count <= 131_072 {
+                return sanitizeRepoJSONData(encoded)
+            }
+            page.removeLast()
+        }
+        return nil
+    }
+
+    private nonisolated static func sameAppContent(_ first: ASRepository.App, _ second: ASRepository.App) -> Bool {
+        var comparable = second
+        comparable.uuid = first.uuid
+        return first == comparable
+    }
+
+    private nonisolated static func buildSnapshot(snapshot: [(URL?, String?, ASRepository)], previousItems: [AppStoreAppItem]) -> XSignCatalogSnapshot? {
+		if Task.isCancelled { return nil }
+        let previousByID = Dictionary(previousItems.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 		let totalCount = snapshot.reduce(0) { $0 + $1.2.apps.count }
 		var allItems: [AppStoreAppItem] = []
 		var ipaBlackOnly: [AppStoreAppItem] = []
@@ -827,14 +945,20 @@ final class AppStoreCacheManager: ObservableObject {
 			var currentRepoItems: [AppStoreAppItem] = []
 			currentRepoItems.reserveCapacity(repo.apps.count)
 			
-			for app in repo.apps {
+			for (index, app) in repo.apps.enumerated() {
+                if index.isMultiple(of: 64) && Task.isCancelled { return nil }
 				let uniqueKey = "\(app.id ?? app.currentName)_\(sourceURLString)"
-				let item = AppStoreAppItem(
+				let item: AppStoreAppItem
+                if let existing = previousByID[uniqueKey], Self.sameAppContent(existing.app, app) {
+                    item = existing
+                } else {
+                    item = AppStoreAppItem(
 					id: uniqueKey,
 					sourceURL: sourceURL,
 					repository: repo,
 					app: app
 				)
+                }
 				if isIPABlack {
 					currentRepoItems.append(item)
 				}
@@ -871,6 +995,7 @@ final class AppStoreCacheManager: ObservableObject {
 		let onlyApps = allItems.filter { !$0.isGame }
 		let onlyGames = allItems.filter { $0.isGame }
 		
+		let grouped = Dictionary(grouping: allItems, by: { $0.category })
 		var categoryDict: [AppStore2026Category: [AppStoreAppItem]] = [:]
 		for category in AppStore2026Category.allCases {
 			switch category {
@@ -886,7 +1011,7 @@ final class AppStoreCacheManager: ObservableObject {
 				let casual = onlyGames.filter { $0.category == .casualGames || $0.category == .puzzleGames }
 				categoryDict[category] = casual.isEmpty ? onlyGames : casual
 			default:
-				let exactMatches = allItems.filter { $0.category == category }
+				let exactMatches = grouped[category] ?? []
 				if !exactMatches.isEmpty {
 					categoryDict[category] = exactMatches
 				} else {
@@ -904,20 +1029,17 @@ final class AppStoreCacheManager: ObservableObject {
 		let finalCats = categoryDict
 		let shouldUpdateIPABlack = didIncludeIPABlackRepo
 		
-		await MainActor.run {
-			let manager = AppStoreCacheManager.shared
-			if shouldUpdateIPABlack {
-				manager.ipablackItems = finalIPABlack
-				manager.ipablackEditorialNews = finalIPABlackNews
-			}
-			if !finalAll.isEmpty {
-				manager.allCombinedItems = finalAll
-				manager.pureAppsOnly = finalApps
-				manager.pureGamesOnly = finalGames
-				manager.itemsByCategory = finalCats
-			}
-		}
-	}
+        if Task.isCancelled { return nil }
+        return XSignCatalogSnapshot(
+            ipablackItems: finalIPABlack,
+            ipablackEditorialNews: finalIPABlackNews,
+            allCombinedItems: finalAll,
+            pureAppsOnly: finalApps,
+            pureGamesOnly: finalGames,
+            itemsByCategory: finalCats,
+            includesIPABlack: shouldUpdateIPABlack
+        )
+    }
 }
 
 // MARK: - Universal IPABlack & KhoIPA Payload Extractor + Instant ZSign

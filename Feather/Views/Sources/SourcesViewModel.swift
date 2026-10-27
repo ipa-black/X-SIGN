@@ -31,10 +31,11 @@ final class SourcesViewModel: ObservableObject {
 		isFinished = false
 		defer { isFinished = true }
 		
-		self.sources = [:]
+		let requestedSources = Set(sources)
+        self.sources = self.sources.filter { requestedSources.contains($0.key) }
 
 		let sourcesArray = Array(sources)
-		let effectiveBatchSize = max(1, batchSize)
+		let effectiveBatchSize = min(2, max(1, batchSize))
 		
 		for startIndex in stride(from: 0, to: sourcesArray.count, by: effectiveBatchSize) {
 			let endIndex = min(startIndex + effectiveBatchSize, sourcesArray.count)

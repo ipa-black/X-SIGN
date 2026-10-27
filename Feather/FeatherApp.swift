@@ -315,7 +315,7 @@ final class XSignRemoteManager: ObservableObject {
 			if let storeCache = storeCache, let sourcesViewModel = sourcesViewModel {
 				let request = NSFetchRequest<AltSource>(entityName: "AltSource")
 				if let sources = try? Storage.shared.context.fetch(request) {
-					await storeCache.ensureFetched(sources: sources, viewModel: sourcesViewModel)
+					await storeCache.forceRefresh(sources: sources, viewModel: sourcesViewModel)
 				}
 			}
 		}
@@ -395,7 +395,6 @@ struct FeatherApp: App {
 	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
     @AppStorage("Feather.userInterfaceStyle")
     private var userInterfaceStyle: Int = UIUserInterfaceStyle.unspecified.rawValue
-	@State private var _showSplash = true
 	
 	private var activeTintColor: Color {
 		Color(hex: userTintHex)
@@ -460,21 +459,8 @@ struct FeatherApp: App {
 				.accentColor(activeTintColor)
 				.animation(.smooth, value: downloadManager.manualDownloads.description)
 				
-				if _showSplash {
-					XSignPhotoIdenticalSplashView(
-						cache: storeCache,
-						sourcesViewModel: sourcesViewModel,
-						remoteManager: remoteManager
-					) {
-						withAnimation(.easeInOut(duration: 0.45)) {
-							_showSplash = false
-						}
-					}
-					.transition(.opacity)
-					.zIndex(999)
-				}
-				
-				if !_showSplash && (remoteManager.isMaintenanceActive || remoteManager.isForceUpdateRequired) {
+
+				if remoteManager.isMaintenanceActive || remoteManager.isForceUpdateRequired {
 					XSignRemoteGateOverlayView(remoteManager: remoteManager, tintColor: activeTintColor)
 						.transition(.opacity)
 						.zIndex(1000)
@@ -494,11 +480,19 @@ struct FeatherApp: App {
             .accentColor(activeTintColor)
 			.preferredColorScheme(preferredAppColorScheme)
 			.task {
+                let launchSources = storage.getSources()
+                Task { @MainActor in
+                    await storeCache.ensureFetched(sources: launchSources, viewModel: sourcesViewModel)
+                }
 				await remoteManager.fetchRemoteConfig(storeCache: storeCache, sourcesViewModel: sourcesViewModel)
 			}
 			.onChange(of: scenePhase) { newPhase in
 				if newPhase == .active {
 					securityEnforcer.evaluateNetworkSecurity()
+                    let activeSources = storage.getSources()
+                    Task { @MainActor in
+                        await storeCache.ensureFetched(sources: activeSources, viewModel: sourcesViewModel)
+                    }
 					Task {
 						await remoteManager.fetchRemoteConfig(storeCache: storeCache, sourcesViewModel: sourcesViewModel)
 					}
@@ -1005,19 +999,19 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 				let config = URLSessionConfiguration.default
 				config.urlCache = nil
 				config.requestCachePolicy = .useProtocolCachePolicy
-				config.httpMaximumConnectionsPerHost = 8
+				config.httpMaximumConnectionsPerHost = 4
 				return DataLoader(configuration: config)
 			}()
 			let dataCache = try? DataCache(name: "thewonderofyou.Feather.datacache")
 			let imageCache = Nuke.ImageCache()
 			dataCache?.sizeLimit = 300 * 1024 * 1024
-			imageCache.costLimit = 90 * 1024 * 1024
-			imageCache.countLimit = 300
+			imageCache.costLimit = 32 * 1024 * 1024
+			imageCache.countLimit = 120
 			$0.dataCache = dataCache
 			$0.imageCache = imageCache
 			$0.dataLoader = dataLoader
 			$0.dataCachePolicy = .storeAll
-			$0.isStoringPreviewsInMemoryCache = true
+			$0.isStoringPreviewsInMemoryCache = false
 			$0.isDecompressionEnabled = true
 		}
 		
