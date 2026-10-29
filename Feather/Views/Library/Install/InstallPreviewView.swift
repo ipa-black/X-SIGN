@@ -19,6 +19,8 @@ struct InstallPreviewView: View {
 	@AppStorage("Feather.serverMethod") private var _serverMethod: Int = 0
 	@State private var _isWebviewPresenting = false
 	@State private var progressTask: Task<Void, Never>?
+    @State private var installLinkTask: Task<Void, Never>?
+    @State private var didRequestInstallation = false
 	
 	var app: AppInfoPresentable
 	@StateObject var viewModel: InstallerStatusViewModel
@@ -58,14 +60,23 @@ struct InstallPreviewView: View {
 		}
 		.onReceive(viewModel.$status) { newStatus in
 			if _installationMethod == 0 {
-				if case .ready = newStatus {
-					if _serverMethod == 0 {
-						UIApplication.shared.open(URL(string: installer.iTunesLink)!)
-					} else if _serverMethod == 1 {
-						_isWebviewPresenting = true
-					}
-				}
-				
+                if case .ready = newStatus, !didRequestInstallation {
+                    didRequestInstallation = true
+                    installLinkTask = Task { @MainActor in
+                        let branded = await installer.verifiedBrandedInstallLink()
+                        guard !Task.isCancelled else { return }
+                        if let branded {
+                            _ = await UIApplication.shared.open(branded)
+                        } else if _serverMethod == 0, let local = URL(string: installer.iTunesLink) {
+                            // Static-only Hosting has no dynamic manifest. Keep the existing
+                            // installation method working until the optional endpoint is deployed.
+                            _ = await UIApplication.shared.open(local)
+                        } else if _serverMethod == 1 {
+                            _isWebviewPresenting = true
+                        }
+                    }
+                }
+
 				if case .sendingPayload = newStatus, _serverMethod == 1 {
 					_isWebviewPresenting = false
 				}
@@ -99,8 +110,10 @@ struct InstallPreviewView: View {
 		}
 		#endif
 		
-		.onDisappear {
-			progressTask?.cancel()
+        .onDisappear {
+            installLinkTask?.cancel()
+            installLinkTask = nil
+            progressTask?.cancel()
 			progressTask = nil
 			
 			#if !targetEnvironment(macCatalyst)
@@ -144,65 +157,50 @@ struct InstallPreviewView: View {
 			return
 		}
 				
-		Task.detached {
-			do {
-				let handler = await ArchiveHandler(app: app, viewModel: viewModel)
-				try await handler.move()
-				
-				let packageUrl = try await handler.archive()
-				
-				if await !isSharing {
-					if await _installationMethod == 0 {
-						await MainActor.run {
-							installer.packageUrl = packageUrl
-							viewModel.status = .ready
-						}
-						
-						if case .installing = await viewModel.status {
-							let task = await startInstallProgressPolling(
-								bundleID: app.identifier!,
-								viewModel: viewModel
-							)
+        let sharing = isSharing
+        let method = _installationMethod
+        let useShareSheet = _useShareSheet
+        let currentBundleID = Bundle.main.bundleIdentifier ?? ""
+        Task.detached(priority: .userInitiated) {
+            do {
+                let handler = await ArchiveHandler(app: app, viewModel: viewModel)
+                try await handler.move()
+                let packageURL = try await handler.archive()
+                if !sharing {
+                    if method == 0 {
+                        await MainActor.run {
+                            installer.packageUrl = packageURL
+                            viewModel.status = .ready
+                        }
+                        // The .installing status publisher owns progress polling.
+                        // Starting a second poller here races that publisher.
+                    } else if method == 1 {
+                        let proxy = await InstallationProxy(viewModel: viewModel)
+                        try await proxy.install(at: packageURL, suspend: app.identifier == currentBundleID)
+                    }
+                } else {
+                    let package = try await handler.moveToArchive(packageURL, shouldOpen: !useShareSheet)
+                    await MainActor.run {
+                        dismiss()
+                        if useShareSheet, let package {
+                            UIActivityViewController.show(activityItems: [package])
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    progressTask?.cancel()
+                    progressTask = nil
+                    UIAlertController.showAlertWithOk(
+                        title: .localized("Install"), message: String(describing: error), action: {
+                            HeartbeatManager.shared.start(true)
+                            dismiss()
+                        }
+                    )
+                }
+            }
+        }
 
-							await MainActor.run {
-								progressTask = task
-							}
-						}
-					} else if await _installationMethod == 1 {
-						let handler = await InstallationProxy(viewModel: viewModel)
-						try await handler.install(at: packageUrl, suspend: app.identifier == Bundle.main.bundleIdentifier!)
-					}
-				} else {
-					let package = try await handler.moveToArchive(packageUrl, shouldOpen: !_useShareSheet)
-					
-					if await !_useShareSheet {
-						await MainActor.run {
-							dismiss()
-						}
-					} else {
-						if let package {
-							await MainActor.run {
-								dismiss()
-								UIActivityViewController.show(activityItems: [package])
-							}
-						}
-					}
-				}
-			} catch {
-				await progressTask?.cancel()
-				
-				await MainActor.run {
-					UIAlertController.showAlertWithOk(
-						title: .localized("Install"),
-						message: String(describing: error),
-						action: {
-							HeartbeatManager.shared.start(true)
-							dismiss()
-						}
-					)
-				}
-			}
-		}
 	}
 	
 	private func startInstallProgressPolling(
@@ -220,8 +218,8 @@ struct InstallPreviewView: View {
 					hasStarted = true
 				}
 
-				let progress = await hasStarted
-					? _normalizeInstallProgress(rawProgress)
+				let progress = hasStarted
+					? Self._normalizeInstallProgress(rawProgress)
 					: 0.0
 
 				Logger.misc.info("Install progress for \(bundleID): \(progress)")
@@ -233,17 +231,17 @@ struct InstallPreviewView: View {
 				if hasStarted && rawProgress == 0 {
 					await MainActor.run {
 						viewModel.installProgress = 1.0
-						viewModel.status = .completed(.success(()))
+						viewModel.status = .completed(.success(Void()))
 					}
 					break
 				}
 
-				try? await Task.sleep(nanoseconds: 1_000_000) // 1 ms
+				do { try await Task.sleep(nanoseconds: 500_000_000) } catch { break } // 2 polls/s; no busy loop
 			}
 		}
 	}
 
-	private func _normalizeInstallProgress(_ rawProgress: Double) -> Double {
+	private nonisolated static func _normalizeInstallProgress(_ rawProgress: Double) -> Double {
 		min(1.0, max(0.0, (rawProgress - 0.6) / 0.3))
 	}
 }

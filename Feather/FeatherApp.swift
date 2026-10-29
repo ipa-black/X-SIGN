@@ -295,7 +295,7 @@ final class XSignRemoteManager: ObservableObject {
         let root: XSignRemoteRoot?
         if let running = requestTask {
             root = await running.value
-        } else if Date().timeIntervalSince(lastSuccess) < 5 {
+        } else if Date().timeIntervalSince(lastSuccess) < 5, XSignSecurityEnforcer.shared.didCompleteOnlineHandshake {
             root = cachedRoot
         } else {
             let cached = cachedRoot
@@ -347,7 +347,10 @@ final class XSignRemoteManager: ObservableObject {
         NotificationCenter.default.post(name: .xsignPolicyChanged, object: nil)
         if needsRefresh {
             lastCatalogRefresh = Date()
-            await cache.forceRefresh(sources: Storage.shared.getSources(), viewModel: sourcesVM)
+            // Policy checks must never wait for the full catalog or every custom source.
+            // The cache manager already coalesces concurrent refresh requests.
+            let sources = Storage.shared.getSources()
+            Task { @MainActor in await cache.forceRefresh(sources: sources, viewModel: sourcesVM) }
         }
     }
 

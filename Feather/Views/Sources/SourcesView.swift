@@ -1172,6 +1172,78 @@ struct XSignSerialQueue<Element> {
     }
 }
 
+// MARK: - Bounded download and signing pipeline
+// The network may download the next IPA while the previous IPA is processed.
+// Only one network stream and one file on deck are allowed; payloads stay on disk.
+struct XSignBoundedPipeline<Job, File> {
+    struct Prepared {
+        let key: String
+        let job: Job
+        let file: File
+    }
+    private var downloads = XSignSerialQueue<Job>()
+    private var registered: Set<String> = []
+    private(set) var staged: Prepared? = nil
+    private(set) var processing: Prepared? = nil
+    var activeDownload: XSignSerialQueue<Job>.Entry? { downloads.active }
+    var pendingCount: Int { downloads.pendingCount }
+    var canStartDownload: Bool {
+        if case nil = activeDownload, case nil = staged { return pendingCount > 0 }
+        return false
+    }
+    var inFlightCount: Int {
+        (activeDownload.map { _ in 1 } ?? 0) + (staged.map { _ in 1 } ?? 0) + (processing.map { _ in 1 } ?? 0)
+    }
+    mutating func enqueue(key: String, job: Job) -> Bool {
+        guard registered.insert(key).inserted else { return false }
+        guard downloads.enqueue(key: key, value: job) else {
+            registered.remove(key)
+            return false
+        }
+        return true
+    }
+    mutating func takeDownload() -> XSignSerialQueue<Job>.Entry? {
+        guard canStartDownload else { return nil }
+        return downloads.next()
+    }
+    mutating func completeDownload(key: String, file: File) -> Bool {
+        guard let entry = activeDownload, entry.key == key, case nil = staged,
+              downloads.finish(key: key) else { return false }
+        staged = Prepared(key: key, job: entry.value, file: file)
+        return true
+    }
+    mutating func failDownload(key: String) -> Bool {
+        guard downloads.finish(key: key) else { return false }
+        registered.remove(key)
+        return true
+    }
+    mutating func takeProcessing() -> Prepared? {
+        guard case nil = processing, let next = staged else { return nil }
+        staged = nil
+        processing = next
+        return next
+    }
+    mutating func finishProcessing(key: String) -> Bool {
+        guard processing?.key == key else { return false }
+        processing = nil
+        registered.remove(key)
+        return true
+    }
+}
+
+// Collapse byte-level KVO callbacks before they enqueue work on the UI actor.
+final class XSignDownloadProgressGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var greatest = -1
+    func shouldPublish(_ percent: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard percent > greatest else { return false }
+        greatest = percent
+        return true
+    }
+}
+
 // MARK: - Universal IPABlack & KhoIPA Payload Extractor + Instant ZSign
 @MainActor
 final class AutoSignPipelineManager: ObservableObject {
@@ -1180,7 +1252,7 @@ final class AutoSignPipelineManager: ObservableObject {
 	@Published var activeStates: [String: Stage] = [:]
 	@Published var downloadProgress: [String: Int] = [:]
 	@Published var readyToInstallApp: AnyApp? = nil
-    private var serialDownloads = XSignSerialQueue<ASRepository.App>()
+    private var packagePipeline = XSignBoundedPipeline<ASRepository.App, URL>()
     private var pendingInstallApps: [AnyApp] = []
     private var activeNetworkTask: URLSessionDownloadTask?
     private var isCheckingDownloadPolicy = false
@@ -1189,6 +1261,7 @@ final class AutoSignPipelineManager: ObservableObject {
 	enum Stage: Equatable {
         case queued
         case failed(String)
+        case preparing
 		case downloading
 		case signing
 		case ready
@@ -1199,8 +1272,7 @@ final class AutoSignPipelineManager: ObservableObject {
 	
 	private lazy var turboSession: URLSession = {
 		let config = URLSessionConfiguration.default
-		config.networkServiceType = .responsiveData
-		config.multipathServiceType = .handover
+		config.networkServiceType = .default
 		config.httpMaximumConnectionsPerHost = 1
 		config.waitsForConnectivity = false
         config.timeoutIntervalForRequest = 60
@@ -1262,19 +1334,24 @@ final class AutoSignPipelineManager: ObservableObject {
             activeStates[key] = .failed("رابط التنزيل غير صالح.")
             return
         }
-        guard serialDownloads.enqueue(key: key, value: app) else { return }
+        guard packagePipeline.enqueue(key: key, job: app) else { return }
         activeStates[key] = .queued
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         startNextDownload()
     }
 
     func applyRemotePolicy() {
-        if XSignRemoteManager.shared.blockingReason != nil { activeNetworkTask?.cancel() }
-        else { downloadPreflightBlocked = false; startNextDownload() }
+        if XSignRemoteManager.shared.blockingReason != nil {
+            activeNetworkTask?.cancel()
+        } else {
+            downloadPreflightBlocked = false
+            startNextProcessing()
+            startNextDownload()
+        }
     }
 
     private func startNextDownload() {
-        guard case nil = serialDownloads.active, !isCheckingDownloadPolicy, !downloadPreflightBlocked,
+        guard packagePipeline.canStartDownload, !isCheckingDownloadPolicy, !downloadPreflightBlocked,
               XSignRemoteManager.shared.blockingReason == nil else { return }
         isCheckingDownloadPolicy = true
         Task { @MainActor in
@@ -1282,7 +1359,7 @@ final class AutoSignPipelineManager: ObservableObject {
             isCheckingDownloadPolicy = false
             if let reason {
                 downloadPreflightBlocked = true
-                if let entry = serialDownloads.next() { finishDownload(key: entry.key, error: reason) }
+                if let entry = packagePipeline.takeDownload() { failNetworkDownload(key: entry.key, message: reason) }
                 return
             }
             beginNextDownload()
@@ -1290,21 +1367,16 @@ final class AutoSignPipelineManager: ObservableObject {
     }
 
     private func beginNextDownload() {
-        guard XSignRemoteManager.shared.blockingReason == nil else { return }
-        guard let entry = serialDownloads.next() else { return }
+        guard XSignRemoteManager.shared.blockingReason == nil,
+              let entry = packagePipeline.takeDownload() else { return }
         let app = entry.value
         let key = entry.key
-        guard !XSignSecurityEnforcer.shared.isVPNOrProxyDetected else {
-            finishDownload(key: key, error: "توقف التنزيل بسبب تشغيل VPN أو مراقب الشبكة.")
-            return
-        }
         guard let url = app.currentDownloadUrl ?? app.versions?.first?.downloadURL else {
-            finishDownload(key: key, error: "رابط التنزيل غير صالح.")
+            failNetworkDownload(key: key, message: "رابط التنزيل غير صالح.")
             return
         }
         activeStates[key] = .downloading
-        downloadProgress[key] = 1
-        refreshCertificateCache()
+        downloadProgress[key] = 0
         var request = URLRequest(url: url)
         request.setValue("X-SIGN/2.0", forHTTPHeaderField: "User-Agent")
         let task = turboSession.downloadTask(with: request) { [weak self] location, response, error in
@@ -1312,7 +1384,7 @@ final class AutoSignPipelineManager: ObservableObject {
             guard error == nil, let location,
                   let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 Task { @MainActor in
-                    self.finishDownload(key: key, error: error?.localizedDescription ?? "تعذّر تنزيل التطبيق من الخادم.")
+                    self.failNetworkDownload(key: key, message: error?.localizedDescription ?? "تعذّر تنزيل التطبيق من الخادم.")
                 }
                 return
             }
@@ -1327,61 +1399,93 @@ final class AutoSignPipelineManager: ObservableObject {
                 try FileManager.default.moveItem(at: location, to: file)
             } catch {
                 try? FileManager.default.removeItem(at: file)
-                Task { @MainActor in self.finishDownload(key: key, error: error.localizedDescription) }
+                Task { @MainActor in self.failNetworkDownload(key: key, message: error.localizedDescription) }
                 return
             }
-            Task { @MainActor in
-                self.activeNetworkTask = nil
-                if let reason = XSignRemoteManager.shared.blockingReason {
-                    try? FileManager.default.removeItem(at: file)
-                    self.finishDownload(key: key, error: reason)
-                    return
-                }
-                self.progressObservations.removeValue(forKey: key)
-                self.downloadProgress.removeValue(forKey: key)
-                self.activeStates[key] = .signing
-                FR.importPackageFile(file) { [weak self] result in
-                    try? FileManager.default.removeItem(at: file)
-                    guard let self else { return }
-                    switch result {
-                    case .failure(let error):
-                        self.finishDownload(key: key, error: error.localizedDescription)
-                    case .success(let uuid):
-                        let request = NSFetchRequest<Imported>(entityName: "Imported")
-                        request.fetchLimit = 1
-                        request.predicate = NSPredicate(format: "uuid == %@", uuid)
-                        guard let imported = (try? Storage.shared.context.fetch(request))?.first else {
-                            self.finishDownload(key: key, error: "تعذّر العثور على التطبيق المستورد.")
-                            return
-                        }
-                        self.triggerInstantZSign(for: imported, appKey: key)
-                    }
-                }
-            }
+            Task { @MainActor in self.receivedPackage(file, key: key) }
         }
+        let progressGate = XSignDownloadProgressGate()
         progressObservations[key] = task.progress.observe(\Progress.fractionCompleted, options: [.new]) { [weak self] progress, _ in
             let fraction = progress.fractionCompleted
             guard fraction.isFinite else { return }
-            let percent = Int(max(1, min(99, fraction * 100)))
+            let percent = Int(max(0, min(99, fraction * 100)))
+            guard progressGate.shouldPublish(percent) else { return }
             Task { @MainActor in
                 guard let self, self.activeStates[key] == .downloading else { return }
+                // At most 100 progress publications per download, regardless of chunk count.
                 if self.downloadProgress[key] != percent { self.downloadProgress[key] = percent }
             }
         }
         activeNetworkTask = task
-        task.priority = URLSessionTask.defaultPriority
+        task.priority = URLSessionTask.highPriority
         task.resume()
     }
 
-    private func finishDownload(key: String, error: String?) {
+    private func receivedPackage(_ file: URL, key: String) {
+        guard packagePipeline.activeDownload?.key == key else {
+            try? FileManager.default.removeItem(at: file)
+            return
+        }
+        if let reason = XSignRemoteManager.shared.blockingReason {
+            try? FileManager.default.removeItem(at: file)
+            failNetworkDownload(key: key, message: reason)
+            return
+        }
+        guard packagePipeline.completeDownload(key: key, file: file) else {
+            try? FileManager.default.removeItem(at: file)
+            failNetworkDownload(key: key, message: "تعذّر إدراج الملف في طابور التجهيز.")
+            return
+        }
         activeNetworkTask = nil
-        guard serialDownloads.finish(key: key) else { return }
         progressObservations.removeValue(forKey: key)
         downloadProgress.removeValue(forKey: key)
-        if let error {
-            activeStates[key] = .failed(error)
+        activeStates[key] = .preparing
+        // These two lanes overlap without opening a second simultaneous download.
+        startNextProcessing()
+        startNextDownload()
+    }
+
+    private func startNextProcessing() {
+        guard XSignRemoteManager.shared.blockingReason == nil,
+              let entry = packagePipeline.takeProcessing() else { return }
+        let key = entry.key
+        let file = entry.file
+        activeStates[key] = .preparing
+        refreshCertificateCache()
+        FR.importPackageFile(file) { [weak self] result in
+            try? FileManager.default.removeItem(at: file)
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.finishDownload(key: key, error: error.localizedDescription)
+            case .success(let uuid):
+                let request = NSFetchRequest<Imported>(entityName: "Imported")
+                request.fetchLimit = 1
+                request.predicate = NSPredicate(format: "uuid == %@", uuid)
+                guard let imported = (try? Storage.shared.context.fetch(request))?.first else {
+                    self.finishDownload(key: key, error: "تعذّر العثور على التطبيق المستورد.")
+                    return
+                }
+                self.triggerInstantZSign(for: imported, appKey: key)
+            }
         }
-        Task { @MainActor [weak self] in self?.startNextDownload() }
+    }
+
+    private func failNetworkDownload(key: String, message: String) {
+        guard packagePipeline.failDownload(key: key) else { return }
+        activeNetworkTask = nil
+        progressObservations.removeValue(forKey: key)
+        downloadProgress.removeValue(forKey: key)
+        activeStates[key] = .failed(message)
+        startNextProcessing()
+        startNextDownload()
+    }
+
+    private func finishDownload(key: String, error: String?) {
+        guard packagePipeline.finishProcessing(key: key) else { return }
+        if let error { activeStates[key] = .failed(error) }
+        startNextProcessing()
+        startNextDownload()
     }
 
     func triggerInstantZSign(for importedApp: Imported, appKey: String) {
@@ -1774,8 +1878,6 @@ struct AppStoreTodayView: View {
 						onSettingsTap: { showSettingsSheet = true }
 					)
 					
-                    XSignSourceIdentity(cache: cache)
-                    XSignCatalogCategories(cache: cache)
                     ForEach(cache.ipablackEditorialNews) { instruction in
                         XSignAnnouncementCard(instruction: instruction)
                             .padding(.horizontal, 18)
@@ -3162,11 +3264,11 @@ struct AppStore2026DownloadButton: View {
 				.frame(width: 82, height: 32)
 				.background(Capsule().fill(accentColor))
 				
-			case .signing:
+			case .preparing, .signing:
 				HStack(spacing: 4) {
 					Image(systemName: "bolt.fill")
 						.font(.system(size: 11, weight: .bold))
-					Text("توقيع...")
+					Text(currentStage == .preparing ? "تجهيز..." : "توقيع...")
 						.font(.system(size: 11, weight: .bold))
 				}
 				.foregroundStyle(AppStoreTheme.contrastingText(forHex: userTintHex))

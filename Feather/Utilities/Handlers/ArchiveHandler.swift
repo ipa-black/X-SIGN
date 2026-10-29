@@ -45,7 +45,7 @@ final class ArchiveHandler: NSObject {
 	}
 	
 	func archive() async throws -> URL {
-		return try await Task.detached(priority: .background) { [self] in
+		return try await Task.detached(priority: .userInitiated) { [self] in
 			guard let payloadUrl = await self._payloadUrl else {
 				throw SigningFileHandlerError.appNotFound
 			}
@@ -57,7 +57,7 @@ final class ArchiveHandler: NSObject {
 				paths: [payloadUrl],
 				zipFilePath: zipUrl,
 				password: nil,
-				compression: ZipCompression.allCases[ArchiveHandler.getCompressionLevel()],
+				compression: ZipCompression.allCases[min(ZipCompression.allCases.count - 1, max(0, ArchiveHandler.getCompressionLevel()))],
 				progress: { progress in
 					Task { @MainActor in
 						self.viewModel.packageProgress = progress
