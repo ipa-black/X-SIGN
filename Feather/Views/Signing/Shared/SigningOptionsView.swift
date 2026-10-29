@@ -10,6 +10,7 @@ import NimbleViews
 
 // MARK: - View
 struct SigningOptionsView: View {
+    @ObservedObject private var policy = XSignSecurityEnforcer.shared
 	@Binding var options: Options
 	var temporaryOptions: Options?
 	
@@ -22,7 +23,7 @@ struct SigningOptionsView: View {
 					systemImage: "shield",
 					isOn: $options.ppqProtection,
 					temporaryValue: temporaryOptions?.ppqProtection
-				)
+				).disabled(policy.locks.lock_bundle_rename ?? true)
 			} footer: {
 				Text(.localized("Enabling any protection will append a random string to the bundleidentifiers of the apps you sign, this is to ensure your Apple ID does not get flagged by Apple. However, when using a signing service you can ignore this."))
 			}
@@ -139,7 +140,7 @@ struct SigningOptionsView: View {
 				systemImage: "character.bubble",
 				isOn: $options.changeLanguageFilesForCustomDisplayName,
 				temporaryValue: temporaryOptions?.changeLanguageFilesForCustomDisplayName
-			)
+			).disabled(policy.locks.lock_bundle_rename ?? true)
 		} footer: {
 			Text(.localized("By default, localized titles for the app won't be changed, however this option overrides it."))
 		}
@@ -178,7 +179,7 @@ struct SigningOptionsView: View {
 				systemImage: "pencil",
 				isOn: $options.experiment_replaceSubstrateWithEllekit,
 				temporaryValue: temporaryOptions?.experiment_replaceSubstrateWithEllekit
-			)
+			).disabled(policy.locks.lock_dylib_injection ?? true)
 			
 			_toggle(
 				.localized("Disable Liquid Glass"),

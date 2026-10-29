@@ -64,7 +64,8 @@ struct XSignHeaderLogo: View {
 // MARK: - View
 struct SigningView: View {
 	@Environment(\.dismiss) var dismiss
-	@StateObject private var _optionsManager = OptionsManager.shared
+	@ObservedObject private var policy = XSignSecurityEnforcer.shared
+    @StateObject private var _optionsManager = OptionsManager.shared
 	
 	@State private var _temporaryOptions: Options = OptionsManager.shared.options
 	@State private var _temporaryCertificate: Int
@@ -212,24 +213,24 @@ extension SigningView {
 				} else {
 					FRAppIconView(app: app, size: 56)
 				}
-			}
-			
-			_infoCell(.localized("Name"), desc: _temporaryOptions.appName ?? app.name) {
+            }.disabled(policy.locks.lock_icon_change ?? true)
+
+            _infoCell(.localized("Name"), desc: _temporaryOptions.appName ?? app.name) {
 				SigningPropertiesView(
 					title: .localized("Name"),
 					initialValue: _temporaryOptions.appName ?? (app.name ?? ""),
 					bindingValue: $_temporaryOptions.appName
-				)
-			}
+                )
+            }.disabled(policy.locks.lock_bundle_rename ?? true)
 			_infoCell(.localized("Identifier"), desc: _temporaryOptions.appIdentifier ?? app.identifier) {
 				SigningPropertiesView(
 					title: .localized("Identifier"),
 					initialValue: _temporaryOptions.appIdentifier ?? (app.identifier ?? ""),
 					bindingValue: $_temporaryOptions.appIdentifier
-				)
-			}
+                )
+            }.disabled(policy.locks.lock_bundle_rename ?? true)
 			
-			_cloneRow(for: app)
+			_cloneRow(for: app).disabled(policy.locks.lock_bundle_rename ?? true)
 			
 			_infoCell(.localized("Version"), desc: _temporaryOptions.appVersion ?? app.version) {
 				SigningPropertiesView(
@@ -360,8 +361,8 @@ extension SigningView {
 				NavigationLink(.localized("Tweaks")) {
 					SigningTweaksView(
 						options: $_temporaryOptions
-					)
-				}
+                    )
+                }.disabled(policy.locks.lock_dylib_injection ?? true)
 			}
 			
 			NavigationLink(.localized("Properties")) {

@@ -10,6 +10,7 @@ import NimbleViews
 
 // MARK: - View
 struct SigningTweaksView: View {
+    @ObservedObject private var policy = XSignSecurityEnforcer.shared
 	@State private var _isAddingPresenting = false
 	
 	@Binding var options: Options
@@ -74,6 +75,7 @@ struct SigningTweaksView: View {
 			.ignoresSafeArea()
 		}
 		.animation(.smooth, value: options.injectionFiles)
+        .disabled(policy.locks.lock_dylib_injection ?? true)
 	}
 }
 

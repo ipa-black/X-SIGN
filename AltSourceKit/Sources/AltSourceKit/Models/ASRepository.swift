@@ -35,6 +35,12 @@ public struct ASRepository: Sendable, Decodable, Hashable, Identifiable {
 	public var apps: [App]
 	public var featuredApps: [App.ID]?
 	public var news: [News]?
+    public var categories: [CatalogCategory]?
+    public struct CatalogCategory: Codable, Hashable, Sendable, Identifiable {
+        public var id: String
+        public var name: String
+        public var isGame: Bool?
+    }
 
 	public init(from decoder: any Decoder) throws {
 		let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -81,8 +87,7 @@ public struct ASRepository: Sendable, Decodable, Hashable, Identifiable {
 
 		let decodedApps = try container.decodeIfPresent([App].self, forKey: .apps)
 		guard
-			let apps = decodedApps,
-			!apps.isEmpty
+			let apps = decodedApps
 		else {
 			throw NSError(
 				domain: "FeatherSources",
@@ -93,7 +98,8 @@ public struct ASRepository: Sendable, Decodable, Hashable, Identifiable {
 			)
 		}
 		
-		self.apps = apps
+		self.categories = try container.decodeIfPresent([CatalogCategory].self, forKey: .categories)
+        self.apps = apps
 		self.featuredApps =
 			try container.decodeIfPresent([App.ID].self, forKey: .featuredApps) ?? []
 		self.news = try container.decodeIfPresent([News].self, forKey: .news) ?? []
@@ -101,7 +107,8 @@ public struct ASRepository: Sendable, Decodable, Hashable, Identifiable {
 
 	public enum CodingKeys: String, CodingKey {
 		case id = "identifier"
-		case name,
+		case categories
+        case name,
 		     subtitle,
 		     description,
 		     website,
@@ -155,6 +162,7 @@ extension ASRepository {
 		public var size: Int64?
 
 		public var category: String?
+        public var skipAppStoreLookup: Bool?
 
 		public var beta: Bool?
 
@@ -293,7 +301,8 @@ extension ASRepository {
 					?? (try? container.decodeIfPresent(String.self, forKey: .size))
 					.flatMap { Int64($0) }
 
-			self.category = try container.decodeIfPresent(
+			self.skipAppStoreLookup = try container.decodeIfPresent(Bool.self, forKey: .skipAppStoreLookup)
+            self.category = try container.decodeIfPresent(
 				String.self,
 				forKey: .category
 			)
@@ -338,7 +347,7 @@ extension ASRepository {
 			case name, subtitle, description
 			case developer = "developerName"
 			case versions, version, versionDate, date, versionDescription, downloadURL,
-			     localizedDescription, iconURL, tintColor, size, category, beta
+			     localizedDescription, iconURL, tintColor, size, category, beta, skipAppStoreLookup
 			case permissions, appPermissions
 			case screenshots, screenshotURLs
 			case marketplaceID

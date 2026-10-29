@@ -99,15 +99,27 @@ actor AppStoreLiveMetadataBridge {
 		return url
 	}
 	
+    private var metadataGeneration = 0
+
+    func invalidateCache() {
+        metadataGeneration += 1
+        metadataOrder.removeAll()
+        for task in inFlightTasks.values { task.cancel() }
+        inFlightTasks.removeAll()
+        memoryCache.removeAll()
+        negativeCache.removeAll()
+        try? FileManager.default.removeItem(at: Self.diskCacheDir)
+    }
+
 	// إذا كانت الأيقونة مستخرجة من ملفات التطبيق ومرفوعة على GitHub، فالتطبيق محذوف من متجر أبل ولا نطلب أي صور من أبل
 	nonisolated static func hasExtractedGitHubIcon(_ iconURL: URL?) -> Bool {
 		guard let str = iconURL?.absoluteString.lowercased() else { return false }
 		return str.contains("/assets/icons/")
 	}
 	
-	func fetchMetadata(bundleID: String?, appName: String, iconURL: URL? = nil) async -> AppleStoreRichMetadata? {
+	func fetchMetadata(bundleID: String?, appName: String, iconURL: URL? = nil, skipLookup: Bool = false) async -> AppleStoreRichMetadata? {
 		// تخطي متجر أبل نهائياً إذا كان التطبيق يستخدم أيقونة مستخرجة من ملفاته على GitHub
-		if Self.hasExtractedGitHubIcon(iconURL) {
+		if skipLookup || Self.hasExtractedGitHubIcon(iconURL) {
 			return nil
 		}
 		
@@ -134,7 +146,8 @@ actor AppStoreLiveMetadataBridge {
 		}
 		
         guard !Task.isCancelled, inFlightTasks.count < 4 else { return nil }
-		let task = Task<AppleStoreRichMetadata?, Never> {
+		let generation = metadataGeneration
+        let task = Task<AppleStoreRichMetadata?, Never> {
 			// الفحص يتم حصرياً عبر الـ Bundle ID؛ إذا كان التطبيق محذوفاً من المتجر نتوقف فوراً ولا نجلب صوراً عشوائية بالاسم
 			guard let bID = bundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
 				  bID.contains("."),
@@ -163,6 +176,7 @@ actor AppStoreLiveMetadataBridge {
 		
 		inFlightTasks[cacheKey] = task
 		let result = await task.value
+        guard metadataGeneration == generation else { return nil }
 		inFlightTasks.removeValue(forKey: cacheKey)
 		
 		if let result {
@@ -406,6 +420,8 @@ enum AppStoreBilingualEngine {
 struct AppStoreAppItem: Identifiable, Hashable, Sendable {
 	let id: String
 	let sourceURL: URL?
+    let sourceName: String
+    let sourceCategories: [ASRepository.CatalogCategory]
 	let app: ASRepository.App
 	let category: AppStore2026Category
 	let isGame: Bool
@@ -413,14 +429,16 @@ struct AppStoreAppItem: Identifiable, Hashable, Sendable {
 	let searchIndexTokens: String
 	let screenshots: [URL]
 	
-	init(id: String, sourceURL: URL?, repository _: ASRepository, app: ASRepository.App) {
+	init(id: String, sourceURL: URL?, repository: ASRepository, app: ASRepository.App) {
 		self.id = id
 		self.sourceURL = sourceURL
+        self.sourceName = repository.name ?? "المصدر"
+        self.sourceCategories = repository.categories ?? []
 		self.app = app
 		
 		let classified = AppStore2026Category.strictlyClassify(app: app)
 		self.category = classified
-		self.isGame = classified.isGameCategory
+		self.isGame = repository.categories?.first(where: { $0.id == app.category })?.isGame ?? classified.isGameCategory
 		self.arabicSubtitle = AppStoreBilingualEngine.localizedSubtitle(for: app, category: classified)
 		self.searchIndexTokens = AppStoreBilingualEngine.buildFastSearchTokens(for: app, category: classified)
 		
@@ -455,6 +473,7 @@ struct TodayEditorialInstruction: Identifiable, Sendable {
 	let imageURL: URL?
 	let tintColor: Color
 	let associatedApp: AppStoreAppItem?
+    let targetURL: URL?
 }
 
 enum AppStore2026Category: String, CaseIterable, Identifiable, Sendable {
@@ -624,6 +643,11 @@ private struct XSignCatalogSnapshot: Sendable {
     var pureGamesOnly: [AppStoreAppItem] = []
     var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] = [:]
     var includesIPABlack = false
+    var sourceName = "IPA BLACK"
+    var sourceSubtitle = ""
+    var sourceIconURL: URL? = nil
+    var sourceCategories: [ASRepository.CatalogCategory] = []
+    var skippedLookupBundleIDs: Set<String> = []
 }
 
 @MainActor
@@ -638,6 +662,17 @@ final class AppStoreCacheManager: ObservableObject {
     var pureGamesOnly: [AppStoreAppItem] { catalog.pureGamesOnly }
     var itemsByCategory: [AppStore2026Category: [AppStoreAppItem]] { catalog.itemsByCategory }
 
+    var sourceName: String { catalog.sourceName }
+    var sourceSubtitle: String { catalog.sourceSubtitle }
+    var sourceIconURL: URL? { catalog.sourceIconURL }
+    var sourceCategories: [ASRepository.CatalogCategory] { catalog.sourceCategories }
+    var hasLoadedCatalog: Bool { catalog.includesIPABlack || Self.coreTargets.isEmpty }
+
+    func shouldSkipStoreLookup(_ bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return catalog.skippedLookupBundleIDs.contains(bundleID)
+    }
+
     private var directLoadedRepos: [String: ASRepository] = [:]
     private var repoFingerprints: [String: Data] = [:]
     private var customSnapshot: [(URL?, String?, ASRepository)] = []
@@ -648,10 +683,49 @@ final class AppStoreCacheManager: ObservableObject {
     private var indexGeneration: UInt64 = 0
     private var indexTask: Task<XSignCatalogSnapshot?, Never>?
 
-    private nonisolated static let coreTargets: [(urlStr: String, id: String, file: String, seed: String)] = [
+    private nonisolated static let defaultCoreTargets: [(urlStr: String, id: String, file: String, seed: String)] = [
         (ProtectedSourcesVault.ipaBlackURLString, "xsign.core.ipablack", "ipablack_cache.json", "XSignLaunchIPABlack"),
         (ProtectedSourcesVault.storeAPIURLString, "xsign.core.storeapi", "storeapi_cache.json", "XSignLaunchStoreAPI")
     ]
+
+    private nonisolated static var coreTargets: [(urlStr: String, id: String, file: String, seed: String)] {
+        guard let data = UserDefaults.standard.data(forKey: "xsign.managedSources"),
+              let sources = try? JSONDecoder().decode([XSignCoreSourceItem].self, from: data) else { return defaultCoreTargets }
+        return sources.map { source in
+            let known = defaultCoreTargets.first { $0.urlStr == source.url }
+            let file = known?.file ?? "managed_" + SHA256.hash(data: Data(source.url.utf8)).prefix(10).map { String(format: "%02x", $0) }.joined() + ".json"
+            return (source.url, source.id, file, known?.seed ?? "")
+        }
+    }
+
+    @discardableResult
+    func configureManagedSources(_ sources: [XSignCoreSourceItem]?) -> Bool {
+        guard let sources else { return false }
+        var seen = Set<String>()
+        let valid = sources.filter { source in
+            guard let url = URL(string: source.url), url.scheme?.lowercased() == "https", url.host != nil,
+                  !source.id.isEmpty else { return false }
+            return seen.insert(source.url).inserted
+        }
+        guard valid.count == sources.count,
+              let encoded = try? JSONEncoder().encode(valid) else { return false }
+        let prior = UserDefaults.standard.data(forKey: "xsign.managedSources")
+        if let prior, (try? JSONDecoder().decode([XSignCoreSourceItem].self, from: prior)) == valid { return false }
+        UserDefaults.standard.set(encoded, forKey: "xsign.managedSources")
+        let allowed = Set(valid.map { $0.url })
+        directLoadedRepos = directLoadedRepos.filter { allowed.contains($0.key) }
+        repoFingerprints = repoFingerprints.filter { allowed.contains($0.key) }
+        nextRefreshAllowed = .distantPast
+        return true
+    }
+
+    func invalidateNetworkCache() {
+        repoFingerprints.removeAll()
+        nextRefreshAllowed = .distantPast
+        for target in Self.coreTargets { UserDefaults.standard.removeObject(forKey: "XSign.catalog.etag." + target.file) }
+        // Keep the visible snapshot and last good disk catalog until a valid response replaces them.
+        Task { await AppStoreLiveMetadataBridge.shared.invalidateCache() }
+    }
 
     private nonisolated static var diskCacheDirectory: URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -662,7 +736,7 @@ final class AppStoreCacheManager: ObservableObject {
 
     private nonisolated static let fastRepoSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
-        config.httpMaximumConnectionsPerHost = 2
+        config.httpMaximumConnectionsPerHost = 1
         config.timeoutIntervalForRequest = 12
         config.timeoutIntervalForResource = 20
         config.urlCache = nil
@@ -735,9 +809,10 @@ final class AppStoreCacheManager: ObservableObject {
 
     private func loadInstantDiskSnapshot() {
         diskSnapshotTask = Task { @MainActor [weak self] in
+            let targets = Self.coreTargets
             let cached = await Task.detached(priority: .userInitiated) {
                 var entries: [(String, ASRepository, Data)] = []
-                for target in Self.coreTargets {
+                for target in targets {
                     let path = Self.diskCacheDirectory.appendingPathComponent(target.file)
                     guard let data = try? Data(contentsOf: path, options: .mappedIfSafe),
                           let repo = Self.decodeRepository(data) else { continue }
@@ -746,7 +821,7 @@ final class AppStoreCacheManager: ObservableObject {
                 return entries
             }.value
             guard let self else { return }
-            for (url, repo, digest) in cached {
+            for (url, repo, digest) in cached where Self.coreTargets.contains(where: { $0.urlStr == url }) {
                 self.directLoadedRepos[url] = repo
                 self.repoFingerprints[url] = digest
             }
@@ -782,9 +857,9 @@ final class AppStoreCacheManager: ObservableObject {
             var mustRefresh = force
             repeat {
                 self.refreshAgain = false
-                let succeeded = await self.fetchCoreReposDirectlyInParallel()
+                let succeeded = await self.fetchCoreReposSequentially()
                 if !custom.isEmpty {
-                    await viewModel.fetchSources(custom, refresh: mustRefresh, batchSize: 2)
+                    await viewModel.fetchSources(custom, refresh: mustRefresh, batchSize: 1)
                 }
                 self.rebuildCacheIfNeeded(sources: sources, repositoriesMap: viewModel.sources)
                 self.nextRefreshAllowed = Date().addingTimeInterval(succeeded ? 60 : 10)
@@ -795,58 +870,64 @@ final class AppStoreCacheManager: ObservableObject {
         await task.value
     }
 
-    private func fetchCoreReposDirectlyInParallel() async -> Bool {
+    private func fetchCoreReposSequentially() async -> Bool {
         var succeeded = false
-        await withTaskGroup(of: (String, ASRepository?, Data?)?.self) { group in
-            for target in Self.coreTargets {
-                let knownDigest = repoFingerprints[target.urlStr]
-                group.addTask(priority: .utility) {
-                    guard let url = URL(string: target.urlStr) else { return nil }
-                    let tagKey = "XSign.catalog.etag." + target.file
-                    var request = URLRequest(url: url)
-                    request.setValue("X-SIGN/2.0", forHTTPHeaderField: "User-Agent")
-                    if knownDigest != nil, let tag = UserDefaults.standard.string(forKey: tagKey) {
-                        request.setValue(tag, forHTTPHeaderField: "If-None-Match")
-                    }
-                    do {
-                        let (data, response) = try await Self.fastRepoSession.data(for: request)
-                        guard let http = response as? HTTPURLResponse else { return nil }
-                        if http.statusCode == 304, knownDigest != nil {
-                            return (target.urlStr, nil, nil)
-                        }
-                        guard (200..<300).contains(http.statusCode) else { return nil }
-                        // Decoding, hashing, and disk writes stay off the main actor.
-                        return await Task.detached(priority: .utility) { () -> (String, ASRepository?, Data?)? in
-                            let digest = Data(SHA256.hash(data: data))
-                            if knownDigest == digest { return (target.urlStr, nil, nil) }
-                            guard let repo = Self.decodeRepository(data) else { return nil }
-                            let cache = Self.diskCacheDirectory.appendingPathComponent(target.file)
-                            try? data.write(to: cache, options: .atomic)
-                            if let preview = Self.makeLaunchPreview(data) {
-                                try? preview.write(to: Self.diskCacheDirectory.appendingPathComponent("preview_" + target.file), options: .atomic)
-                            }
-                            if let tag = http.value(forHTTPHeaderField: "ETag") {
-                                UserDefaults.standard.set(tag, forKey: tagKey)
-                            } else {
-                                UserDefaults.standard.removeObject(forKey: tagKey)
-                            }
-                            return (target.urlStr, Optional(repo), Optional(digest))
-                        }.value
-                    } catch { return nil }
-                }
-            }
-            for await result in group {
-                guard let (url, repo, digest) = result else { continue }
-                succeeded = true
-                if let repo, let digest {
-                    directLoadedRepos[url] = repo
-                    repoFingerprints[url] = digest
-                    // Publish the first completed source without waiting for a slower one.
-                    scheduleSnapshot(priority: .utility)
-                }
+        for target in Self.coreTargets {
+            if Task.isCancelled { break }
+            let result = await Self.fetchCoreRepository(
+                urlString: target.urlStr,
+                cacheFile: target.file,
+                knownDigest: repoFingerprints[target.urlStr]
+            )
+            guard let (url, repo, digest) = result else { continue }
+            guard Self.coreTargets.contains(where: { $0.urlStr == url }) else { continue }
+            succeeded = true
+            if let repo, let digest {
+                directLoadedRepos[url] = repo
+                repoFingerprints[url] = digest
+                scheduleSnapshot(priority: .utility)
+                await indexTask?.value
             }
         }
         return succeeded
+    }
+
+    private nonisolated static func fetchCoreRepository(
+        urlString: String, cacheFile: String, knownDigest: Data?
+    ) async -> (String, ASRepository?, Data?)? {
+        guard let url = URL(string: urlString) else { return nil }
+        let tagKey = "XSign.catalog.etag." + cacheFile
+        var request = URLRequest(url: url)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("X-SIGN/2.0", forHTTPHeaderField: "User-Agent")
+        if knownDigest != nil, let tag = UserDefaults.standard.string(forKey: tagKey) {
+            request.setValue(tag, forHTTPHeaderField: "If-None-Match")
+        }
+        do {
+            let (data, response) = try await Self.fastRepoSession.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return nil }
+            if http.statusCode == 304, knownDigest != nil {
+                return (urlString, nil, nil)
+            }
+            guard (200..<300).contains(http.statusCode) else { return nil }
+            // Decoding, hashing, and disk writes stay off the main actor.
+            return await Task.detached(priority: .utility) { () -> (String, ASRepository?, Data?)? in
+                let digest = Data(SHA256.hash(data: data))
+                if knownDigest == digest { return (urlString, nil, nil) }
+                guard let repo = Self.decodeRepository(data) else { return nil }
+                let cache = Self.diskCacheDirectory.appendingPathComponent(cacheFile)
+                try? data.write(to: cache, options: .atomic)
+                if let preview = Self.makeLaunchPreview(data) {
+                    try? preview.write(to: Self.diskCacheDirectory.appendingPathComponent("preview_" + cacheFile), options: .atomic)
+                }
+                if let tag = http.value(forHTTPHeaderField: "ETag") {
+                    UserDefaults.standard.set(tag, forKey: tagKey)
+                } else {
+                    UserDefaults.standard.removeObject(forKey: tagKey)
+                }
+                return (urlString, Optional(repo), Optional(digest))
+            }.value
+        } catch { return nil }
     }
 
     func rebuildCacheIfNeeded<S: Collection>(sources: S, repositoriesMap: [AltSource: ASRepository]) where S.Element == AltSource {
@@ -869,7 +950,7 @@ final class AppStoreCacheManager: ObservableObject {
                 entries.append((URL(string: target.urlStr), target.id, repo))
             }
         }
-        guard !entries.isEmpty else { return }
+        if entries.isEmpty { catalog = XSignCatalogSnapshot(); return }
         indexGeneration &+= 1
         let generation = indexGeneration
         let input = entries
@@ -881,11 +962,7 @@ final class AppStoreCacheManager: ObservableObject {
         indexTask = worker
         Task { @MainActor [weak self] in
             guard let next = await worker.value, let self, self.indexGeneration == generation else { return }
-            var snapshot = next
-            if !snapshot.includesIPABlack {
-                snapshot.ipablackItems = self.catalog.ipablackItems
-                snapshot.ipablackEditorialNews = self.catalog.ipablackEditorialNews
-            }
+            let snapshot = next
             self.catalog = snapshot
             self.indexTask = nil
         }
@@ -893,9 +970,9 @@ final class AppStoreCacheManager: ObservableObject {
 
     private nonisolated static func makeLaunchPreview(_ data: Data) -> Data? {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let apps = root["apps"] as? [[String: Any]], !apps.isEmpty else { return nil }
-        let rootKeys: Set<String> = ["name", "identifier", "iconURL", "tintColor", "news"]
-        let appKeys: Set<String> = ["name", "bundleIdentifier", "subtitle", "localizedDescription", "developerName", "iconURL", "downloadURL", "version", "size", "category", "versions", "screenshots", "screenshotURLs"]
+              let apps = root["apps"] as? [[String: Any]] else { return nil }
+        let rootKeys: Set<String> = ["name", "identifier", "iconURL", "tintColor", "news", "subtitle", "categories"]
+        let appKeys: Set<String> = ["name", "bundleIdentifier", "subtitle", "localizedDescription", "developerName", "iconURL", "downloadURL", "version", "size", "category", "versions", "screenshots", "screenshotURLs", "skipAppStoreLookup"]
         var preview = root.filter { rootKeys.contains($0.key) }
         var page = apps.prefix(24).map { app -> [String: Any] in
             var item = app.filter { appKeys.contains($0.key) }
@@ -907,11 +984,12 @@ final class AppStoreCacheManager: ObservableObject {
             return item
         }
         if let news = preview["news"] as? [Any] { preview["news"] = Array(news.prefix(2)) }
-        while !page.isEmpty {
+        while true {
             preview["apps"] = page
             if let encoded = try? JSONSerialization.data(withJSONObject: preview), encoded.count <= 131_072 {
                 return sanitizeRepoJSONData(encoded)
             }
+            guard !page.isEmpty else { return nil }
             page.removeLast()
         }
         return nil
@@ -949,7 +1027,8 @@ final class AppStoreCacheManager: ObservableObject {
                 if index.isMultiple(of: 64) && Task.isCancelled { return nil }
 				let uniqueKey = "\(app.id ?? app.currentName)_\(sourceURLString)"
 				let item: AppStoreAppItem
-                if let existing = previousByID[uniqueKey], Self.sameAppContent(existing.app, app) {
+                if let existing = previousByID[uniqueKey], Self.sameAppContent(existing.app, app),
+                   existing.sourceName == (repo.name ?? "المصدر"), existing.sourceCategories == (repo.categories ?? []) {
                     item = existing
                 } else {
                     item = AppStoreAppItem(
@@ -974,17 +1053,18 @@ final class AppStoreCacheManager: ObservableObject {
 					for newsItem in newsList {
 						let matchedApp = currentRepoItems.first {
 							$0.app.id == newsItem.appID
-						} ?? currentRepoItems.first
+						}
 						
 						ipaBlackNews.append(
 							TodayEditorialInstruction(
 								id: newsItem.id,
-								badge: "يحدث الآن",
+								badge: newsItem.notify ? "تنبيه" : "يحدث الآن",
 								title: newsItem.title,
 								caption: newsItem.caption,
 								imageURL: newsItem.imageURL,
 								tintColor: newsItem.tintColor ?? AppStoreTheme.oceanBlue,
-								associatedApp: matchedApp
+								associatedApp: matchedApp,
+                                targetURL: xsignSafeURL(newsItem.url?.absoluteString)
 							)
 						)
 					}
@@ -1037,8 +1117,58 @@ final class AppStoreCacheManager: ObservableObject {
             pureAppsOnly: finalApps,
             pureGamesOnly: finalGames,
             itemsByCategory: finalCats,
-            includesIPABlack: shouldUpdateIPABlack
+            includesIPABlack: shouldUpdateIPABlack,
+            sourceName: snapshot.first(where: { ProtectedSourcesVault.isIPABlackSource($0.0, identifier: $0.1) })?.2.name ?? "IPA BLACK",
+            sourceSubtitle: snapshot.first(where: { ProtectedSourcesVault.isIPABlackSource($0.0, identifier: $0.1) })?.2.subtitle ?? "",
+            sourceIconURL: snapshot.first(where: { ProtectedSourcesVault.isIPABlackSource($0.0, identifier: $0.1) })?.2.iconURL,
+            sourceCategories: snapshot.first(where: { ProtectedSourcesVault.isIPABlackSource($0.0, identifier: $0.1) })?.2.categories ?? [],
+            skippedLookupBundleIDs: Set(finalAll.filter { $0.app.skipAppStoreLookup == true }.compactMap { $0.app.id })
         )
+    }
+}
+
+// MARK: - Serial FIFO download queue
+struct XSignSerialQueue<Element> {
+    struct Entry {
+        let key: String
+        let value: Element
+    }
+    private var waiting: [Entry?] = []
+    private var head = 0
+    private var registered: Set<String> = []
+    private(set) var active: Entry? = nil
+    var pendingCount: Int { waiting.count - head }
+
+    init() {}
+
+    mutating func enqueue(key: String, value: Element) -> Bool {
+        guard registered.insert(key).inserted else { return false }
+        waiting.append(Entry(key: key, value: value))
+        return true
+    }
+
+    mutating func next() -> Entry? {
+        guard case nil = active else { return nil }
+        guard head < waiting.count, let entry = waiting[head] else { return nil }
+        waiting[head] = nil
+        head += 1
+        if head == waiting.count {
+            waiting.removeAll(keepingCapacity: true)
+            head = 0
+        } else if head >= 64 && head >= waiting.count / 2 {
+            waiting.removeFirst(head)
+            head = 0
+        }
+        active = entry
+        return entry
+    }
+
+    @discardableResult
+    mutating func finish(key: String) -> Bool {
+        guard active?.key == key else { return false }
+        registered.remove(key)
+        active = nil
+        return true
     }
 }
 
@@ -1050,8 +1180,15 @@ final class AutoSignPipelineManager: ObservableObject {
 	@Published var activeStates: [String: Stage] = [:]
 	@Published var downloadProgress: [String: Int] = [:]
 	@Published var readyToInstallApp: AnyApp? = nil
+    private var serialDownloads = XSignSerialQueue<ASRepository.App>()
+    private var pendingInstallApps: [AnyApp] = []
+    private var activeNetworkTask: URLSessionDownloadTask?
+    private var isCheckingDownloadPolicy = false
+    private var downloadPreflightBlocked = false
 	
 	enum Stage: Equatable {
+        case queued
+        case failed(String)
 		case downloading
 		case signing
 		case ready
@@ -1064,8 +1201,10 @@ final class AutoSignPipelineManager: ObservableObject {
 		let config = URLSessionConfiguration.default
 		config.networkServiceType = .responsiveData
 		config.multipathServiceType = .handover
-		config.httpMaximumConnectionsPerHost = 16
+		config.httpMaximumConnectionsPerHost = 1
 		config.waitsForConnectivity = false
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 3600
 		config.requestCachePolicy = .reloadIgnoringLocalCacheData
 		config.urlCache = nil
 		return URLSession(configuration: config)
@@ -1105,146 +1244,190 @@ final class AutoSignPipelineManager: ObservableObject {
 		}
 	}
 	
-	func downloadAndAutoSign(app: ASRepository.App) {
-		// فحص حظر الـ VPN ومراقب الشبكة قبل السماح بتحميل أي تطبيق من السورس
-		XSignSecurityEnforcer.shared.evaluateNetworkSecurity()
-		if XSignSecurityEnforcer.shared.isVPNOrProxyDetected {
-			UIAlertController.showAlertWithOk(
-				title: "تنبيه أمني",
-				message: XSignSecurityEnforcer.shared.locks.vpn_warning_message ?? "لا يمكن تحميل التطبيقات أثناء تشغيل VPN أو مراقب شبكة."
-			)
-			return
-		}
-		
-		guard let url = app.currentDownloadUrl ?? app.versions?.first?.downloadURL else { return }
-		let appKey = app.id ?? app.currentName
-		
-		guard activeStates[appKey] == nil else { return }
-		UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-		activeStates[appKey] = .downloading
-		downloadProgress[appKey] = 1
-		refreshCertificateCache()
-		
-		let existingUUIDs = Set(Self.fetchImportedApps().compactMap { $0.uuid })
-		
-		var request = URLRequest(url: url)
-		request.setValue("X-SIGN/2.0 (TurboDirect; iOS)", forHTTPHeaderField: "User-Agent")
-		
-		let task = turboSession.downloadTask(with: request) { [weak self] tempURL, _, error in
-			guard let self else { return }
-			
-			if error != nil || tempURL == nil {
-				Task { @MainActor in
-					self.progressObservations.removeValue(forKey: appKey)
-					self.activeStates[appKey] = nil
-					self.downloadProgress.removeValue(forKey: appKey)
-				}
-				return
-			}
-			
-			let fastFileURL = FileManager.default.temporaryDirectory
-				.appendingPathComponent("TurboZSign_\(UUID().uuidString).ipa")
-			
-			do {
-				if FileManager.default.fileExists(atPath: fastFileURL.path) {
-					try? FileManager.default.removeItem(at: fastFileURL)
-				}
-				try FileManager.default.moveItem(at: tempURL!, to: fastFileURL)
-			} catch {
-				Task { @MainActor in
-					self.progressObservations.removeValue(forKey: appKey)
-					self.activeStates[appKey] = nil
-					self.downloadProgress.removeValue(forKey: appKey)
-				}
-				return
-			}
-			
-			Task { @MainActor in
-				self.progressObservations.removeValue(forKey: appKey)
-				self.activeStates[appKey] = .signing
-				self.downloadProgress.removeValue(forKey: appKey)
-			}
-			
-			FR.handlePackageFile(fastFileURL) { [weak self] extractError in
-				try? FileManager.default.removeItem(at: fastFileURL)
-				Task { @MainActor in
-					guard let self else { return }
-					if extractError != nil {
-						self.activeStates[appKey] = nil
-						return
-					}
-					let updatedImported = Self.fetchImportedApps()
-					if let newlyImported = updatedImported.first(where: { item in
-						guard let uuid = item.uuid else { return false }
-						return !existingUUIDs.contains(uuid)
-					}) ?? updatedImported.first {
-						Self.prewarmAndNormalizePayload(for: newlyImported)
-						self.triggerInstantZSign(for: newlyImported, appKey: appKey)
-					} else {
-						self.activeStates[appKey] = nil
-					}
-				}
-			}
-		}
-		
-		let observation = task.progress.observe(\Progress.fractionCompleted, options: [.new]) { [weak self] progress, _ in
-			let percent = max(1, min(99, Int(progress.fractionCompleted * 100)))
-			Task { @MainActor in
-				guard let self else { return }
-				if self.downloadProgress[appKey] != percent {
-					self.downloadProgress[appKey] = percent
-				}
-			}
-		}
-		progressObservations[appKey] = observation
-		task.priority = URLSessionTask.highPriority
-		task.resume()
-	}
-	
-	func triggerInstantZSign(for importedApp: Imported, appKey: String) {
-		guard let cert = cachedCertificate ?? Self.fetchActiveCertificate() else {
-			activeStates[appKey] = nil
-			UIAlertController.showAlertWithOk(
-				title: "تم استخراج التطبيق",
-				message: "أضف شهادة من أيقونة الحساب في الأعلى ليتم التوقيع والتثبيت اللحظي."
-			)
-			return
-		}
-		
-		activeStates[appKey] = .signing
-		let options = OptionsManager.shared.options
-		
-		FR.signPackageFile(
-			importedApp,
-			using: options,
-			icon: nil,
-			certificate: cert
-		) { [weak self] error in
-			DispatchQueue.main.async {
-				guard let self else { return }
-				if let error {
-					self.activeStates[appKey] = nil
-					UINotificationFeedbackGenerator().notificationOccurred(.error)
-					UIAlertController.showAlertWithOk(
-						title: "فشل التوقيع",
-						message: error.localizedDescription
-					)
-				} else {
-					self.activeStates[appKey] = .ready
-					UINotificationFeedbackGenerator().notificationOccurred(.success)
-					
-					if let latestSigned = Self.fetchSignedApps().first {
-						self.readyToInstallApp = AnyApp(base: latestSigned)
-					}
-					
-					DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-						self.activeStates[appKey] = nil
-					}
-				}
-			}
-		}
-	}
-	
+    func downloadAndAutoSign(app: ASRepository.App) {
+        if let reason = XSignRemoteManager.shared.blockingReason {
+            UIAlertController.showAlertWithOk(title: "تنبيه", message: reason)
+            return
+        }
+        downloadPreflightBlocked = false
+        let key = app.id ?? app.currentName
+        if let state = activeStates[key] {
+            switch state {
+            case .failed: activeStates.removeValue(forKey: key)
+            default: return
+            }
+        }
+        guard let url = app.currentDownloadUrl ?? app.versions?.first?.downloadURL,
+              ["https", "http"].contains(url.scheme?.lowercased() ?? "") else {
+            activeStates[key] = .failed("رابط التنزيل غير صالح.")
+            return
+        }
+        guard serialDownloads.enqueue(key: key, value: app) else { return }
+        activeStates[key] = .queued
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        startNextDownload()
+    }
+
+    func applyRemotePolicy() {
+        if XSignRemoteManager.shared.blockingReason != nil { activeNetworkTask?.cancel() }
+        else { downloadPreflightBlocked = false; startNextDownload() }
+    }
+
+    private func startNextDownload() {
+        guard case nil = serialDownloads.active, !isCheckingDownloadPolicy, !downloadPreflightBlocked,
+              XSignRemoteManager.shared.blockingReason == nil else { return }
+        isCheckingDownloadPolicy = true
+        Task { @MainActor in
+            let reason = await XSignRemoteManager.shared.prepareProtectedOperation()
+            isCheckingDownloadPolicy = false
+            if let reason {
+                downloadPreflightBlocked = true
+                if let entry = serialDownloads.next() { finishDownload(key: entry.key, error: reason) }
+                return
+            }
+            beginNextDownload()
+        }
+    }
+
+    private func beginNextDownload() {
+        guard XSignRemoteManager.shared.blockingReason == nil else { return }
+        guard let entry = serialDownloads.next() else { return }
+        let app = entry.value
+        let key = entry.key
+        guard !XSignSecurityEnforcer.shared.isVPNOrProxyDetected else {
+            finishDownload(key: key, error: "توقف التنزيل بسبب تشغيل VPN أو مراقب الشبكة.")
+            return
+        }
+        guard let url = app.currentDownloadUrl ?? app.versions?.first?.downloadURL else {
+            finishDownload(key: key, error: "رابط التنزيل غير صالح.")
+            return
+        }
+        activeStates[key] = .downloading
+        downloadProgress[key] = 1
+        refreshCertificateCache()
+        var request = URLRequest(url: url)
+        request.setValue("X-SIGN/2.0", forHTTPHeaderField: "User-Agent")
+        let task = turboSession.downloadTask(with: request) { [weak self] location, response, error in
+            guard let self else { return }
+            guard error == nil, let location,
+                  let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                Task { @MainActor in
+                    self.finishDownload(key: key, error: error?.localizedDescription ?? "تعذّر تنزيل التطبيق من الخادم.")
+                }
+                return
+            }
+            let file = FileManager.default.temporaryDirectory
+                .appendingPathComponent("XSignQueue_\(UUID().uuidString).ipa")
+            do {
+                let attributes = try FileManager.default.attributesOfItem(atPath: location.path)
+                guard let size = attributes[.size] as? NSNumber, size.int64Value > 0 else {
+                    throw NSError(domain: "XSign.Download", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "الملف الذي نزله الخادم فارغ."])
+                }
+                try FileManager.default.moveItem(at: location, to: file)
+            } catch {
+                try? FileManager.default.removeItem(at: file)
+                Task { @MainActor in self.finishDownload(key: key, error: error.localizedDescription) }
+                return
+            }
+            Task { @MainActor in
+                self.activeNetworkTask = nil
+                if let reason = XSignRemoteManager.shared.blockingReason {
+                    try? FileManager.default.removeItem(at: file)
+                    self.finishDownload(key: key, error: reason)
+                    return
+                }
+                self.progressObservations.removeValue(forKey: key)
+                self.downloadProgress.removeValue(forKey: key)
+                self.activeStates[key] = .signing
+                FR.importPackageFile(file) { [weak self] result in
+                    try? FileManager.default.removeItem(at: file)
+                    guard let self else { return }
+                    switch result {
+                    case .failure(let error):
+                        self.finishDownload(key: key, error: error.localizedDescription)
+                    case .success(let uuid):
+                        let request = NSFetchRequest<Imported>(entityName: "Imported")
+                        request.fetchLimit = 1
+                        request.predicate = NSPredicate(format: "uuid == %@", uuid)
+                        guard let imported = (try? Storage.shared.context.fetch(request))?.first else {
+                            self.finishDownload(key: key, error: "تعذّر العثور على التطبيق المستورد.")
+                            return
+                        }
+                        self.triggerInstantZSign(for: imported, appKey: key)
+                    }
+                }
+            }
+        }
+        progressObservations[key] = task.progress.observe(\Progress.fractionCompleted, options: [.new]) { [weak self] progress, _ in
+            let fraction = progress.fractionCompleted
+            guard fraction.isFinite else { return }
+            let percent = Int(max(1, min(99, fraction * 100)))
+            Task { @MainActor in
+                guard let self, self.activeStates[key] == .downloading else { return }
+                if self.downloadProgress[key] != percent { self.downloadProgress[key] = percent }
+            }
+        }
+        activeNetworkTask = task
+        task.priority = URLSessionTask.defaultPriority
+        task.resume()
+    }
+
+    private func finishDownload(key: String, error: String?) {
+        activeNetworkTask = nil
+        guard serialDownloads.finish(key: key) else { return }
+        progressObservations.removeValue(forKey: key)
+        downloadProgress.removeValue(forKey: key)
+        if let error {
+            activeStates[key] = .failed(error)
+        }
+        Task { @MainActor [weak self] in self?.startNextDownload() }
+    }
+
+    func triggerInstantZSign(for importedApp: Imported, appKey: String) {
+        guard let cert = cachedCertificate ?? Self.fetchActiveCertificate() else {
+            finishDownload(key: appKey, error: "تم الاستيراد. أضف شهادة من الإعدادات للتوقيع.")
+            return
+        }
+        activeStates[appKey] = .signing
+        let options = OptionsManager.shared.options
+        FR.signPackageFileWithResult(importedApp, using: options, icon: nil, certificate: cert) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.finishDownload(key: appKey, error: error.localizedDescription)
+            case .success(let uuid):
+                let request = NSFetchRequest<Signed>(entityName: "Signed")
+                request.fetchLimit = 1
+                request.predicate = NSPredicate(format: "uuid == %@", uuid)
+                guard let signed = (try? Storage.shared.context.fetch(request))?.first else {
+                    self.finishDownload(key: appKey, error: "تعذّر العثور على التطبيق الموقّع.")
+                    return
+                }
+                self.activeStates[appKey] = .ready
+                self.enqueueInstallation(signed)
+                self.finishDownload(key: appKey, error: nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                    if self?.activeStates[appKey] == .ready { self?.activeStates[appKey] = nil }
+                }
+            }
+        }
+    }
+
+    private func enqueueInstallation(_ app: Signed) {
+        guard readyToInstallApp?.base.uuid != app.uuid,
+              !pendingInstallApps.contains(where: { $0.base.uuid == app.uuid }) else { return }
+        pendingInstallApps.append(AnyApp(base: app))
+        presentNextReadyApp()
+    }
+
+    func presentNextReadyApp() {
+        guard case nil = readyToInstallApp, !pendingInstallApps.isEmpty else { return }
+        if let root = UIApplication.topViewController()?.view.window?.rootViewController,
+           root.presentedViewController != nil { return }
+        readyToInstallApp = pendingInstallApps.removeFirst()
+    }
+
 	nonisolated static func fetchImportedApps() -> [Imported] {
 		let request = NSFetchRequest<Imported>(entityName: "Imported")
 		request.sortDescriptors = [NSSortDescriptor(keyPath: \Imported.date, ascending: false)]
@@ -1317,7 +1500,7 @@ struct AppStore2026DetailView: View {
 		if let dev = item.app.developer, !dev.isEmpty {
 			return dev
 		}
-		return "IPA BLACK"
+		return item.sourceName
 	}
 	
 	private var formattedSize: String {
@@ -1490,7 +1673,7 @@ struct AppStore2026DetailView: View {
 						.font(.title2.bold())
 						.foregroundStyle(.primary)
 					
-					AppStoreInfoRow(label: "المصدر", value: "IPA BLACK")
+					AppStoreInfoRow(label: "المصدر", value: item.sourceName)
 					AppStoreInfoRow(label: "المطور", value: displayDeveloper)
 					AppStoreInfoRow(label: "الحجم", value: formattedSize)
 					AppStoreInfoRow(label: "الفئة", value: item.category.rawValue)
@@ -1511,7 +1694,8 @@ struct AppStore2026DetailView: View {
 			appleMetadata = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 				bundleID: item.app.id,
 				appName: item.app.currentName,
-				iconURL: item.app.iconURL
+				iconURL: item.app.iconURL,
+                skipLookup: item.app.skipAppStoreLookup == true
 			)
 			isLoadingMetadata = false
 		}
@@ -1590,33 +1774,18 @@ struct AppStoreTodayView: View {
 						onSettingsTap: { showSettingsSheet = true }
 					)
 					
-					if todayApps.isEmpty {
-						AppStore2026EmptyState(isLoading: true)
+                    XSignSourceIdentity(cache: cache)
+                    XSignCatalogCategories(cache: cache)
+                    ForEach(cache.ipablackEditorialNews) { instruction in
+                        XSignAnnouncementCard(instruction: instruction)
+                            .padding(.horizontal, 18)
+                    }
+                    if todayApps.isEmpty {
+                        AppStore2026EmptyState(isLoading: !cache.hasLoadedCatalog)
 							.padding(.horizontal, 18)
 							.padding(.top, 30)
 					} else {
-						ForEach(cache.ipablackEditorialNews) { instruction in
-							if let appItem = instruction.associatedApp {
-								NavigationLink {
-									AppStore2026DetailView(item: appItem)
-								} label: {
-									TodayLiveEventHeroCard(
-										outerTitle: nil,
-										outerSubtitle: nil,
-										cornerBadge: instruction.badge,
-										eventTag: "حدث مميز",
-										headline: instruction.title,
-										descriptionText: instruction.caption,
-										bannerImageURL: instruction.imageURL,
-										cardColor: instruction.tintColor,
-										item: appItem
-									)
-								}
-								.buttonStyle(.plain)
-								.padding(.horizontal, 18)
-							}
-						}
-						
+
 						let trendingFour = Array(todayApps.prefix(4))
 						if !trendingFour.isEmpty {
 							TodayFourAppsListCard(
@@ -1680,7 +1849,7 @@ struct AppStoreTodayView: View {
 						let arcadeStyleFour = Array(todayApps.dropFirst(2).prefix(4))
 						if !arcadeStyleFour.isEmpty {
 							TodayFourAppsListCard(
-								outerTitle: "اكتشف IPA BLACK",
+								outerTitle: "اكتشف \(cache.sourceName)",
 								outerSubtitle: "تصفح أقوى التطبيقات المعدلة والحصرية بضغطة واحدة.",
 								innerCaption: "هيا نبدأ",
 								innerTitle: "تطبيقات حصرية جاهزة للتثبيت الفوري",
@@ -1741,7 +1910,7 @@ struct AppStoreTodayView: View {
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
 			}
-			.sheet(isPresented: $showSettingsSheet) {
+			.sheet(isPresented: $showSettingsSheet, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
 			}
 		}
@@ -1793,9 +1962,10 @@ struct SourcesView: View {
 						title: "التطبيقات",
 						onSettingsTap: { _isSettingsPresenting = true }
 					)
+                    XSignCatalogCategories(cache: cache)
 					
 					if cache.pureAppsOnly.isEmpty {
-						AppStore2026EmptyState(isLoading: true)
+                        AppStore2026EmptyState(isLoading: !cache.hasLoadedCatalog)
 							.padding(.horizontal, 18)
 							.padding(.top, 30)
 					} else {
@@ -1897,7 +2067,7 @@ struct SourcesView: View {
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
 			}
-			.sheet(isPresented: $_isSettingsPresenting) {
+			.sheet(isPresented: $_isSettingsPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
 			}
 		}
@@ -1948,9 +2118,10 @@ struct AppStoreGamesView: View {
 						title: "الألعاب",
 						onSettingsTap: { showSettingsSheet = true }
 					)
+                    XSignCatalogCategories(cache: cache)
 					
 					if cache.pureGamesOnly.isEmpty {
-						AppStore2026EmptyState(isLoading: true)
+                        AppStore2026EmptyState(isLoading: !cache.hasLoadedCatalog)
 							.padding(.horizontal, 18)
 							.padding(.top, 20)
 					} else {
@@ -2057,7 +2228,7 @@ struct AppStoreGamesView: View {
 			.refreshable {
 				await cache.forceRefresh(sources: _sources, viewModel: viewModel)
 			}
-			.sheet(isPresented: $showSettingsSheet) {
+			.sheet(isPresented: $showSettingsSheet, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
 			}
 		}
@@ -2090,6 +2261,7 @@ struct AppStoreSearchView: View {
 						title: "بحث",
 						onSettingsTap: { showSettingsSheet = true }
 					)
+                    XSignCatalogCategories(cache: cache)
 					
 					if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
 						VStack(alignment: .leading, spacing: 14) {
@@ -2168,7 +2340,7 @@ struct AppStoreSearchView: View {
 			.onChange(of: searchText) { newQuery in
 				triggerBackgroundSearch(query: newQuery)
 			}
-			.sheet(isPresented: $showSettingsSheet) {
+			.sheet(isPresented: $showSettingsSheet, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: viewModel)
 			}
 		}
@@ -2217,7 +2389,6 @@ struct AppStoreSearchView: View {
 struct AppStore2026TopHeader: View {
 	let title: String
 	let onSettingsTap: () -> Void
-	@ObservedObject private var autoSign = AutoSignPipelineManager.shared
 	
 	var body: some View {
 		HStack(alignment: .center) {
@@ -2231,11 +2402,6 @@ struct AppStore2026TopHeader: View {
 		}
 		.padding(.horizontal, 18)
 		.padding(.top, 10)
-		.sheet(item: $autoSign.readyToInstallApp) { signedApp in
-			InstallPreviewView(app: signedApp.base, isSharing: signedApp.archive)
-				.presentationDetents([.height(200)])
-				.presentationDragIndicator(.visible)
-		}
 	}
 }
 
@@ -2417,7 +2583,8 @@ struct TodayLiveEventHeroCard: View {
 					if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 						bundleID: item.app.id,
 						appName: item.app.currentName,
-						iconURL: item.app.iconURL
+						iconURL: item.app.iconURL,
+                skipLookup: item.app.skipAppStoreLookup == true
 					) {
 						liveScreenshots = meta.screenshots
 					}
@@ -2748,7 +2915,8 @@ struct TodayFullArtworkDockCard: View {
 				if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 					bundleID: item.app.id,
 					appName: item.app.currentName,
-					iconURL: item.app.iconURL
+					iconURL: item.app.iconURL,
+                skipLookup: item.app.skipAppStoreLookup == true
 				) {
 					liveScreenshots = meta.screenshots
 				}
@@ -2961,6 +3129,26 @@ struct AppStore2026DownloadButton: View {
 			pipeline.downloadAndAutoSign(app: app)
 		} label: {
 			switch currentStage {
+            case .queued:
+                Label("بالانتظار", systemImage: "clock")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 82, height: 32)
+                    .background(AppStoreTheme.controlSurface, in: Capsule())
+            case .failed(let message):
+                VStack(spacing: 3) {
+                    Label("أعد المحاولة", systemImage: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.red)
+                        .frame(width: 82, height: 32)
+                        .background(AppStoreTheme.controlSurface, in: Capsule())
+                    Text(message)
+                        .font(.system(size: 8))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .frame(width: 100)
+                }
+                .accessibilityHint(message)
 			case .downloading:
 				HStack(spacing: 5) {
 					ProgressView()
@@ -3260,7 +3448,8 @@ struct AppStore2026SearchResultCard: View {
 			if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 				bundleID: item.app.id,
 				appName: item.app.currentName,
-				iconURL: item.app.iconURL
+				iconURL: item.app.iconURL,
+                skipLookup: item.app.skipAppStoreLookup == true
 			) {
 				liveScreenshots = meta.screenshots
 			}
@@ -3271,6 +3460,7 @@ struct AppStore2026SearchResultCard: View {
 struct AppStore2026CategoryListView: View {
 	let category: AppStore2026Category
 	let items: [AppStoreAppItem]
+    var customTitle: String? = nil
 	
 	var body: some View {
 		ScrollView(.vertical, showsIndicators: false) {
@@ -3292,7 +3482,7 @@ struct AppStore2026CategoryListView: View {
 			.padding(18)
 		}
 		.background(AppStoreTheme.background.ignoresSafeArea())
-		.navigationTitle(category.rawValue)
+		.navigationTitle(customTitle ?? category.rawValue)
 		.environment(\.layoutDirection, .rightToLeft)
 	}
 }
@@ -3334,7 +3524,7 @@ struct AppStoreIconView: View {
 				.stroke(Color.primary.opacity(0.14), lineWidth: 0.6)
 		)
 		.task {
-			if (url == nil || isFallbackGitHubIcon) && !appName.isEmpty && !AppStoreLiveMetadataBridge.hasExtractedGitHubIcon(url) {
+			if (url == nil || isFallbackGitHubIcon) && !appName.isEmpty && !AppStoreLiveMetadataBridge.hasExtractedGitHubIcon(url) && !AppStoreCacheManager.shared.shouldSkipStoreLookup(bundleID) {
 				if let meta = await AppStoreLiveMetadataBridge.shared.fetchMetadata(
 					bundleID: bundleID,
 					appName: appName,
@@ -3581,3 +3771,60 @@ private struct XSignLegacyTranslation: View {
     }
 }
 // MARK: - End XSign Inline Description Translation
+
+// MARK: - Configured source identity, taxonomy and announcements
+private struct XSignSourceIdentity: View {
+    @ObservedObject var cache: AppStoreCacheManager
+    var body: some View {
+        HStack(spacing: 12) {
+            AppStoreIconView(url: cache.sourceIconURL, size: 42)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(cache.sourceName).font(.headline)
+                if !cache.sourceSubtitle.isEmpty { Text(cache.sourceSubtitle).font(.caption).foregroundStyle(.secondary) }
+            }
+            Spacer()
+        }.padding(.horizontal, 18)
+    }
+}
+
+private struct XSignCatalogCategories: View {
+    @ObservedObject var cache: AppStoreCacheManager
+    var body: some View {
+        if !cache.sourceCategories.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(cache.sourceCategories) { category in
+                        NavigationLink {
+                            AppStore2026CategoryListView(category: .topApps,
+                                items: cache.ipablackItems.filter { $0.app.category == category.id },
+                                customTitle: category.name)
+                        } label: {
+                            Text(category.name).font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 14).padding(.vertical, 9)
+                                .background(AppStoreTheme.controlSurface, in: Capsule())
+                        }.buttonStyle(.plain)
+                    }
+                }.padding(.horizontal, 18)
+            }
+        }
+    }
+}
+
+private struct XSignAnnouncementCard: View {
+    let instruction: TodayEditorialInstruction
+    @ViewBuilder private var content: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(instruction.badge).font(.caption.bold()).foregroundStyle(Color.accentColor)
+            Text(instruction.title).font(.title3.bold())
+            Text(instruction.caption).font(.subheadline).foregroundStyle(.secondary)
+            if instruction.targetURL != nil { Image(systemName: "arrow.up.left.square").foregroundStyle(Color.accentColor) }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+            .background(AppStoreTheme.cardSurface, in: RoundedRectangle(cornerRadius: 18))
+    }
+    var body: some View {
+        if let url = instruction.targetURL { Link(destination: url) { content }.buttonStyle(.plain) }
+        else if let app = instruction.associatedApp {
+            NavigationLink { AppStore2026DetailView(item: app) } label: { content }.buttonStyle(.plain)
+        } else { content }
+    }
+}

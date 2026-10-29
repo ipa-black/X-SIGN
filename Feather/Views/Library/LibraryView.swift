@@ -237,19 +237,19 @@ struct LibraryView: View {
 				}
 			}
 			.environment(\.editMode, $_editMode)
-			.sheet(item: $_selectedInfoAppPresenting) { app in
+			.sheet(item: $_selectedInfoAppPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) { app in
 				LibraryInfoView(app: app.base)
 			}
-			.sheet(item: $_selectedInstallAppPresenting) { app in
+			.sheet(item: $_selectedInstallAppPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) { app in
 				InstallPreviewView(app: app.base, isSharing: app.archive)
 					.presentationDetents([.height(200)])
 					.presentationDragIndicator(.visible)
 			}
-			.fullScreenCover(item: $_selectedSigningAppPresenting) { app in
+			.fullScreenCover(item: $_selectedSigningAppPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) { app in
 				SigningView(app: app.base)
 					.compatNavigationTransition(id: app.base.uuid ?? "", ns: _namespace)
 			}
-			.sheet(isPresented: $_isImportingPresenting) {
+			.sheet(isPresented: $_isImportingPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) {
 				FileImporterRepresentableView(
 					allowedContentTypes: [.ipa, .tipa],
 					allowsMultipleSelection: true,
@@ -259,7 +259,7 @@ struct LibraryView: View {
 				)
 				.ignoresSafeArea()
 			}
-			.sheet(isPresented: $_isSettingsPresenting) {
+			.sheet(isPresented: $_isSettingsPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: sourcesViewModel)
 			}
 			.alert("استيراد وتوقيع من رابط مباشر", isPresented: $_isDownloadingPresenting) {

@@ -10,6 +10,7 @@ import NimbleViews
 
 // MARK: - View
 struct SigningAlternativeIconView: View {
+    @ObservedObject private var policy = XSignSecurityEnforcer.shared
 	@Environment(\.dismiss) var dismiss
 	
 	@State private var _alternateIcons: [(name: String, path: String)] = []
@@ -45,6 +46,7 @@ struct SigningAlternativeIconView: View {
 				}
 			}
 		}
+        .disabled(policy.locks.lock_icon_change ?? true)
 	}
 }
 

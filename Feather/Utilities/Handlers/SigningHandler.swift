@@ -13,6 +13,7 @@ import OSLog
 final class SigningHandler: NSObject {
 	private let _fileManager = FileManager.default
 	private let _uuid = UUID().uuidString
+    var resultUUID: String { _uuid }
 	private var _movedAppPath: URL?
 	// using uuid string is the best way to find the
 	// app we want to sign, it does not matter what
@@ -148,11 +149,13 @@ final class SigningHandler: NSObject {
 		try? _fileManager.removeItem(at: _uniqueWorkDir)
 	}
 	
+	@MainActor
 	func addToDatabase() async throws {
 		let app = try await _directory()
 		
 		guard let appUrl = _fileManager.getPath(in: app, for: "app") else {
-			return
+            throw NSError(domain: "XSign.Signing", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "تعذّر العثور على محتويات التطبيق الموقّع."])
 		}
 		
 		await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in

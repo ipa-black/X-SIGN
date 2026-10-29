@@ -91,7 +91,14 @@ class DownloadManager: NSObject, ObservableObject {
 		
 		let task = _session.downloadTask(with: url)
 		download.task = task
-		task.resume()
+        Task { @MainActor in
+            if let reason = await XSignRemoteManager.shared.prepareProtectedOperation() {
+                self.cancelDownload(download)
+                UIAlertController.showAlertWithOk(title: "تنبيه", message: reason)
+            } else if self.downloads.contains(where: { $0.id == download.id }) {
+                task.resume()
+            }
+        }
 		
 		downloads.append(download)
 		
@@ -124,7 +131,12 @@ class DownloadManager: NSObject, ObservableObject {
 		if let resumeData = download.resumeData {
 			let task = _session.downloadTask(withResumeData: resumeData)
 			download.task = task
-			task.resume()
+            Task { @MainActor in
+                if let reason = await XSignRemoteManager.shared.prepareProtectedOperation() {
+                    self.cancelDownload(download)
+                    UIAlertController.showAlertWithOk(title: "تنبيه", message: reason)
+                } else if self.downloads.contains(where: { $0.id == download.id }) { task.resume() }
+            }
 			
 			#if !targetEnvironment(macCatalyst)
 			_updateBackgroundAudioState()
@@ -132,7 +144,12 @@ class DownloadManager: NSObject, ObservableObject {
 		} else if let url = download.task?.originalRequest?.url {
 			let task = _session.downloadTask(with: url)
 			download.task = task
-			task.resume()
+            Task { @MainActor in
+                if let reason = await XSignRemoteManager.shared.prepareProtectedOperation() {
+                    self.cancelDownload(download)
+                    UIAlertController.showAlertWithOk(title: "تنبيه", message: reason)
+                } else if self.downloads.contains(where: { $0.id == download.id }) { task.resume() }
+            }
 			
 			#if !targetEnvironment(macCatalyst)
 			_updateBackgroundAudioState()
