@@ -1,0 +1,134 @@
+# Compact repair for ipa-black/X-SIGN/main. Application code is recovered from the verified
+# 9dd6a93 commit already in this repository; no extra uploads or external scripts are required.
+name: XSign App Store Experience
+'on':
+  workflow_dispatch: {}
+  push:
+    branches:
+    - main
+    paths:
+    - .github/workflows/XSign_AppStore_Experience.yml
+permissions:
+  contents: write
+concurrency:
+  group: xsign-appstore-main
+  cancel-in-progress: false
+jobs:
+  fix-and-build:
+    if: github.repository == 'ipa-black/X-SIGN' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+    - name: Checkout X-SIGN main
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        submodules: recursive
+    - name: Recover the reviewed update from this repository history
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'XSIGN_RECOVER_REVIEWED_UPDATE'
+        """Recover reviewed scripts from an immutable commit already in this repository.
+
+        The failed workflow itself contains the complete reviewed update. GitHub only
+        rejects its size as an active workflow; the file remains readable in Git history.
+        No YAML dependency or remote executable download is needed on the runner.
+        """
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import subprocess
+
+        SOURCE_COMMIT = "9dd6a93cd1bf793543f399a8fe203782d027b524"
+        SOURCE_PATH = ".github/workflows/XSign_AppStore_Experience.yml"
+        SOURCE_SHA256 = "6e2bad7c2fdfe346d8d736b3c4c7abc7ac70f7a8e28de814d200a1db4fa21aab"
+        SCRIPTS = [{'file': '01-select-xcode.sh', 'sha256': 'bd9ab7978831dc7cbe2846a0dbbac08968865c02afefd5f2d5ce6df6c341442b'}, {'file': '02-apply-original-files.sh', 'sha256': '878f87fae154ddeb2e94a50774d6362c065b0c29352c7a5c5b96960b2cdfa8d7'}, {'file': '03-bundle-catalogs.sh', 'sha256': '65aac30aacf1ff03a0ce497f699b35c6a16337684a2c70894778742819a26369'}, {'file': '04-test-catalogs-and-imports.sh', 'sha256': '42a59dfa800d6d1c3dce38b127e356400fa62a1500fbf2a7181266f0ce48e1f3'}, {'file': '05-build-and-verify-ipa.sh', 'sha256': 'bd9c058f46fd18a828b662223f6be7a0ffd2e3b97661011bc0e591a9e1859fd1'}, {'file': '09-save-to-main.sh', 'sha256': '4f77de236e29d66a4aabefb197d94138c382253c4708a1506041304cdaf343c5'}]
+
+        def main():
+            source = subprocess.check_output(["git", "show", SOURCE_COMMIT + ":" + SOURCE_PATH])
+            if hashlib.sha256(source).hexdigest() != SOURCE_SHA256:
+                raise SystemExit("The pinned update does not match its reviewed digest")
+            lines = source.decode("utf-8").splitlines(keepends=True)
+            scripts = []
+            for index, line in enumerate(lines):
+                if line.rstrip("\r\n") != "      run: |":
+                    continue
+                body = []
+                for following in lines[index + 1:]:
+                    if following.startswith("        "):
+                        body.append(following[8:])
+                    elif not following.strip():
+                        body.append("\n")
+                    else:
+                        break
+                scripts.append("".join(body).rstrip("\n") + "\n")
+            if len(scripts) != len(SCRIPTS):
+                raise SystemExit("Unexpected script structure in the pinned update")
+            prepared = []
+            for text, specification in zip(scripts, SCRIPTS):
+                if hashlib.sha256(text.encode("utf-8")).hexdigest() != specification["sha256"]:
+                    raise SystemExit("Reviewed script digest failed: " + specification["file"])
+                prepared.append((specification["file"], text))
+            directory = Path(os.environ["RUNNER_TEMP"]) / "xsign-reviewed-steps"
+            directory.mkdir(parents=True, exist_ok=True)
+            # All digests are checked before any script is written or executed.
+            for name, text in prepared:
+                (directory / name).write_text(text, encoding="utf-8")
+            print("Recovered", len(prepared), "verified scripts from", SOURCE_COMMIT[:12])
+
+        if __name__ == "__main__":
+            main()
+
+        XSIGN_RECOVER_REVIEWED_UPDATE
+    - name: Select an available Xcode 26 toolchain
+      shell: bash
+      run: |
+        bash "$RUNNER_TEMP/xsign-reviewed-steps/01-select-xcode.sh"
+    - name: Install verified IPA provider client, reference catalog and faster local imports
+      shell: bash
+      run: |
+        bash "$RUNNER_TEMP/xsign-reviewed-steps/02-apply-original-files.sh"
+    - name: Bundle the two independent catalogs and supplied reference snapshot
+      shell: bash
+      run: |
+        bash "$RUNNER_TEMP/xsign-reviewed-steps/03-bundle-catalogs.sh"
+    - name: Test provider errors, Mach-O encryption, variants, metadata editing and automatic loading
+      shell: bash
+      run: |
+        bash "$RUNNER_TEMP/xsign-reviewed-steps/04-test-catalogs-and-imports.sh"
+    - name: Build IPA and verify all complete catalogs and launch previews
+      shell: bash
+      run: |
+        bash "$RUNNER_TEMP/xsign-reviewed-steps/05-build-and-verify-ipa.sh"
+    - name: Upload the updated XSign IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: XSign-AppStore-IPA
+        path: packages/X-SIGN.ipa
+        if-no-files-found: error
+        retention-days: 14
+    - name: Upload Studio and the Arabic operator guide
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: XSign-Studio-and-Guide
+        path: |-
+          Tools/XSign_Studio.html
+          Tools/XSign_Store_Fixes_AR.md
+        if-no-files-found: ignore
+        retention-days: 30
+    - name: Upload test and build logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: XSign-AppStore-Logs
+        path: ${{ runner.temp }}/xsign-appstore-*.log
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Save successful original files and Studio in X-SIGN main
+      shell: bash
+      run: |
+        bash "$RUNNER_TEMP/xsign-reviewed-steps/09-save-to-main.sh"
