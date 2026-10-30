@@ -570,6 +570,12 @@ public struct DateParsed: Codable, Equatable, Hashable, Comparable, Sendable {
 		case string(String)
 	}
 	
+    private static let parsedDateCache: NSCache<NSString, NSDate> = {
+        let cache = NSCache<NSString, NSDate>()
+        cache.countLimit = 4096
+        return cache
+    }()
+
 	// ISO8601 formatters (more accurate for machine-generated dates)
 	private static let isoFormatters: [ISO8601DateFormatter] = [
 		{
@@ -631,11 +637,16 @@ public struct DateParsed: Codable, Equatable, Hashable, Comparable, Sendable {
 		// string formats
 		let dateString = try container.decode(String.self).trimmingCharacters(in: .whitespacesAndNewlines)
 		self.rawDate = .string(dateString)
+        if let cached = Self.parsedDateCache.object(forKey: dateString as NSString) {
+            self.date = cached as Date
+            return
+        }
 		
 		// ISO8601 formatters
 		for formatter in Self.isoFormatters {
 			if let date = formatter.date(from: dateString) {
 				self.date = date
+                Self.parsedDateCache.setObject(date as NSDate, forKey: dateString as NSString)
 				return
 			}
 		}
@@ -644,6 +655,7 @@ public struct DateParsed: Codable, Equatable, Hashable, Comparable, Sendable {
 		for formatter in Self.formatters {
 			if let date = formatter.date(from: dateString) {
 				self.date = date
+                Self.parsedDateCache.setObject(date as NSDate, forKey: dateString as NSString)
 				return
 			}
 		}

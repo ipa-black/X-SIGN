@@ -226,34 +226,45 @@ enum FR {
 		}
 	}
 	
-	static func handleSource(
-		_ urlString: String,
-		competion: @escaping () -> Void
-	) {
-		guard let url = URL(string: urlString) else { return }
-		
-		NBFetchService().fetch(from: url) { (result: Result<ASRepository, Error>) in
-			switch result {
-			case .success(let data):
-				let id = data.id ?? url.absoluteString
-				
-				if !Storage.shared.sourceExists(id) {
-					Storage.shared.addSource(url, repository: data, id: id) { _ in
-						competion()
-					}
-				} else {
-					DispatchQueue.main.async {
-						UIAlertController.showAlertWithOk(title: .localized("Error"), message: .localized("Repository already added."))
-					}
-				}
-			case .failure(let error):
-				DispatchQueue.main.async {
-					UIAlertController.showAlertWithOk(title: .localized("Error"), message: error.localizedDescription)
-				}
-			}
-		}
-	}
-	
+    static func handleSource(_ urlString: String, onFailure: ((Error) -> Void)? = nil, competion: @escaping () -> Void) {
+        guard let input = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["https", "http"].contains(input.scheme?.lowercased() ?? ""), input.host != nil else {
+            onFailure?(XSignCatalogError.invalidURL)
+            return
+        }
+        let url = XSignCatalogIO.canonicalURL(input)
+        Task { @MainActor in
+            do {
+                let record = try await XSignCatalogIO.shared.fetch(url)
+                let identifier = record.repository.id ?? url.absoluteString
+                let finish: (Error?) -> Void = { error in
+                    if let error {
+                        onFailure?(error)
+                        UIAlertController.showAlertWithOk(title: .localized("Error"), message: error.localizedDescription)
+                        return
+                    }
+                    let sources = Storage.shared.getSources()
+                    if let source = sources.first(where: { source in
+                        source.sourceURL.map { XSignCatalogIO.canonicalURL($0) == url } == true || source.identifier == identifier
+                    }) {
+                        SourcesViewModel.shared.seed(record, for: source)
+                    }
+                    AppStoreCacheManager.shared.acceptRepository(record, from: url)
+                    AppStoreCacheManager.shared.rebuildCacheIfNeeded(sources: sources, repositoriesMap: SourcesViewModel.shared.sources)
+                    competion()
+                    Task { @MainActor in
+                        await AppStoreCacheManager.shared.ensureFetched(sources: sources, viewModel: .shared)
+                    }
+                }
+                if Storage.shared.sourceExists(identifier) { finish(nil) }
+                else { Storage.shared.addSource(url, repository: record.repository, id: identifier, completion: finish) }
+            } catch {
+                onFailure?(error)
+                UIAlertController.showAlertWithOk(title: .localized("Error"), message: error.localizedDescription)
+            }
+        }
+    }
+
 	static func exportCertificateAndOpenUrl(using template: String) {
 		// Helper that performs the export for a given certificate
 		func performExport(for certificate: CertificatePair) {

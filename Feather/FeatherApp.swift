@@ -366,7 +366,7 @@ final class XSignRemoteManager: ObservableObject {
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         let base = "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/"
-        for filename in ["xsign-config.json", "repo.json"] {
+        for filename in ["repo.json"] {
             guard let url = URL(string: base + filename) else { continue }
             var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
             request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
@@ -1073,29 +1073,23 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			let request = NSFetchRequest<AltSource>(entityName: "AltSource")
 			let existingSources = (try? context.fetch(request)) ?? []
 			
-			let purgedOnceKey = "xsign.didPurgeLegacyDefaultRepos_v5"
-			for source in existingSources {
-				let urlStr = source.sourceURL?.absoluteString.lowercased() ?? ""
-				let idStr = source.identifier?.lowercased() ?? ""
-				if urlStr.contains("apptesters") || idStr.contains("apptesters") {
-					context.delete(source)
-				} else if !UserDefaults.standard.bool(forKey: purgedOnceKey) {
-					if !urlStr.contains("/ipablack/") {
-						context.delete(source)
-					}
-				}
-			}
-			UserDefaults.standard.set(true, forKey: purgedOnceKey)
-			
+            // Preserve user-added Feather sources across XSign upgrades.
+            for source in existingSources {
+                let url = source.sourceURL?.absoluteString.lowercased() ?? ""
+                let identifier = source.identifier?.lowercased() ?? ""
+                if url.contains("apptesters") || identifier.contains("apptesters") { context.delete(source) }
+            }
+
 			let coreRepos: [(name: String, id: String, url: String)] = [
-				("IPA BLACK", "xsign.core.ipablack", "https://raw.githubusercontent.com/ipa-black/IPABLACK/refs/heads/main/repo.json")
+				("IPA BLACK", "xsign.core.ipablack", ProtectedSourcesVault.ipaBlackURLString),
+                ("IPA BLACK", "xsign.core.storeapi", ProtectedSourcesVault.storeAPIURLString)
 			]
 			
 			let updatedExisting = (try? context.fetch(request)) ?? []
 			for repo in coreRepos {
 				guard let repoURL = URL(string: repo.url) else { continue }
 				let alreadyExists = updatedExisting.contains {
-					$0.sourceURL?.absoluteString.lowercased() == repo.url.lowercased() ||
+					$0.sourceURL.map { XSignCatalogIO.canonicalURL($0) == XSignCatalogIO.canonicalURL(repoURL) } == true ||
 					$0.identifier == repo.id
 				}
 				if !alreadyExists {
