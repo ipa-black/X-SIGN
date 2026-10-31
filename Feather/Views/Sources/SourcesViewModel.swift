@@ -21,6 +21,7 @@ final class SourcesViewModel: ObservableObject {
     func fingerprint(for source: AltSource) -> Data? { fingerprints[source] }
 
     func seed(_ record: XSignRepositoryRecord, for source: AltSource) {
+        guard !ProtectedSourcesVault.isRetiredSource(source.sourceURL, identifier: source.identifier) else { return }
         guard fingerprints[source] != record.fingerprint else { return }
         fingerprints[source] = record.fingerprint
         sources[source] = record.repository
@@ -29,7 +30,7 @@ final class SourcesViewModel: ObservableObject {
 
     func fetchSources<S: Collection>(_ requested: S, refresh: Bool = false, batchSize _: Int = 1) async where S.Element == AltSource {
         while let running { await running.value }
-        let targets = Array(requested)
+        let targets = requested.filter { !ProtectedSourcesVault.isRetiredSource($0.sourceURL, identifier: $0.identifier) }
         let allowed = Set(targets)
         sources = sources.filter { allowed.contains($0.key) }
         fingerprints = fingerprints.filter { allowed.contains($0.key) }
@@ -82,10 +83,12 @@ actor XSignCatalogIO {
     static let shared = XSignCatalogIO()
     nonisolated static let maximumBytes = 33_554_432
     private let directory: URL
+    private let bundledResources: URL?
     private let session: URLSession
     private var requests: [String: Task<XSignRepositoryRecord, Error>] = [:]
 
-    init(directory: URL? = nil, session: URLSession? = nil) {
+    init(directory: URL? = nil, session: URLSession? = nil, bundledResources: URL? = nil) {
+        self.bundledResources = bundledResources
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("XSignCatalogs_v3", isDirectory: true)
         if let session {
@@ -138,7 +141,7 @@ actor XSignCatalogIO {
             }
             func clean(_ value: Any) -> Any {
                 if let dict = value as? [String: Any] {
-                    let optionalURLs: Set<String> = ["iconURL", "website", "headerURL", "imageURL", "url"]
+                    let optionalURLs: Set<String> = ["iconURL", "website", "headerURL", "imageURL", "url", "date", "versionDate"]
                     return dict.reduce(into: [String: Any]()) { result, pair in
                         if optionalURLs.contains(pair.key), let text = pair.value as? String,
                            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
@@ -148,7 +151,40 @@ actor XSignCatalogIO {
                 if let list = value as? [Any] { return list.map(clean) }
                 return value
             }
-            guard let sanitized = try? JSONSerialization.data(withJSONObject: clean(object)),
+            var normalized = object as! [String: Any]
+            if let news = normalized["news"] as? [[String: Any]] {
+                normalized["news"] = news.compactMap { row -> [String: Any]? in
+                    guard let id = row["identifier"] as? String, !id.isEmpty,
+                          let title = row["title"] as? String, !title.isEmpty else { return nil }
+                    var item = row
+                    item["caption"] = row["caption"] as? String ?? ""
+                    return item
+                }
+            }
+            // The live Soon feed uses value/label and a separate gameCategories list.
+            // Convert only category metadata; app and version/download pairs stay intact.
+            if normalized["categories"] is [[String: Any]] || normalized["gameCategories"] is [[String: Any]] {
+                var categories: [[String: Any]] = []
+                var indices: [String: Int] = [:]
+                for key in ["categories", "gameCategories"] {
+                    for row in normalized[key] as? [[String: Any]] ?? [] {
+                        guard let rawID = row["id"] as? String ?? row["value"] as? String,
+                              let rawName = row["name"] as? String ?? row["label"] as? String else { continue }
+                        let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !id.isEmpty, !name.isEmpty else { continue }
+                        let isGame = key == "gameCategories" || row["isGame"] as? Bool == true
+                        if let index = indices[id] {
+                            if isGame { categories[index]["isGame"] = true }
+                        } else {
+                            indices[id] = categories.count
+                            categories.append(["id": id, "name": name, "isGame": isGame])
+                        }
+                    }
+                }
+                normalized["categories"] = categories
+            }
+            guard let sanitized = try? JSONSerialization.data(withJSONObject: clean(normalized)),
                   let parsed = try? JSONDecoder().decode(ASRepository.self, from: sanitized) else {
                 throw XSignCatalogError.invalidJSON
             }
@@ -166,22 +202,25 @@ actor XSignCatalogIO {
 
     func cached(_ input: URL, includeBundled: Bool = true) -> XSignRepositoryRecord? {
         let url = Self.canonicalURL(input)
+        guard !ProtectedSourcesVault.isRetiredSource(url) else { return nil }
         if let result = read(file(url)) { return result }
         guard includeBundled else { return nil }
-        let isStoreAPI = url.absoluteString == "https://raw.githubusercontent.com/ipa-black/store-api/main/public/repo.json"
+        let isIPAOMTK = url.absoluteString == ProtectedSourcesVault.ipaomtkLiveURLString
         let isIPABlack = url.absoluteString == "https://raw.githubusercontent.com/ipa-black/IPABLACK/main/repo.json"
-        guard isStoreAPI || isIPABlack else { return nil }
-        let oldName = isStoreAPI ? "storeapi_cache.json" : "ipablack_cache.json"
+        let isReference = url.absoluteString == "https://raw.githubusercontent.com/ipa-black/X-SIGN/main/Feather/Resources/XSignCatalogReference.json"
+        guard isIPAOMTK || isIPABlack || isReference else { return nil }
+        let oldName = isIPAOMTK ? "ipaomtk_live_cache.json" : isReference ? "reference_cache.json" : "ipablack_cache.json"
         let legacy = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("XSignInstantStoreCache_v2", isDirectory: true).appendingPathComponent(oldName)
         if let result = read(legacy) { return result }
-        let seed = isStoreAPI ? "XSignCatalogStoreAPI" : "XSignCatalogIPABlack"
-        guard let bundled = Bundle.main.url(forResource: seed, withExtension: "json") else { return nil }
+        let seed = isIPAOMTK ? "XSignCatalogIPAOMTKLive" : isReference ? "XSignCatalogReference" : "XSignCatalogIPABlack"
+        guard let bundled = bundledResources?.appendingPathComponent(seed + ".json") ?? Bundle.main.url(forResource: seed, withExtension: "json") else { return nil }
         return read(bundled)
     }
 
     func fetch(_ input: URL) async throws -> XSignRepositoryRecord {
         let url = Self.canonicalURL(input)
+        guard !ProtectedSourcesVault.isRetiredSource(url) else { throw XSignCatalogError.invalidURL }
         guard let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme), url.host != nil else {
             throw XSignCatalogError.invalidURL
         }

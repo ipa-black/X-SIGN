@@ -52,8 +52,10 @@ final class CertificateFileHandler: NSObject {
 		try _fileManager.copyItem(at: _provision, to: destinationURL.appendingPathComponent(_provision.lastPathComponent))
 	}
 	
+	@MainActor
 	func addToDatabase() async throws {
 		
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
 		Storage.shared.addCertificate(
 			uuid: _uuid,
 			password: _keyPassword,
@@ -61,11 +63,15 @@ final class CertificateFileHandler: NSObject {
 			ppq: _certPair?.PPQCheck ?? false,
 			expiration: _certPair?.ExpirationDate ?? Date(),
 			isDefault: _isDefault
-		) { _ in
-			Logger.misc.info("[\(self._uuid)] Added to database")
-		}
+        ) { error in
+            if let error { continuation.resume(throwing: error) }
+            else { continuation.resume() }
+        }
+        }
 	}
 	
+    func cleanAfterFailure() async { try? _fileManager.removeItem(at: _fileManager.certificates(_uuid)) }
+
 	private func _directory() async throws -> URL {
 		// Documents/Feather/Certificates/\(UUID)
 		_fileManager.certificates(_uuid)

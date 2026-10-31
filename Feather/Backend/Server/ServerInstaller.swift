@@ -25,21 +25,37 @@ class ServerInstaller: Identifiable, ObservableObject {
 	@ObservedObject var viewModel: InstallerStatusViewModel
 	private var _server: Application?
 
-	init(app: AppInfoPresentable, viewModel: InstallerStatusViewModel) throws {
+	init(app: AppInfoPresentable, viewModel: InstallerStatusViewModel) {
 		self.app = app
 		self.viewModel = viewModel
-		try _setup()
-		try _configureRoutes()
-		try _server?.server.start()
-		_needsShutdown = true
+        // Constructing a SwiftUI installation sheet must not start Vapor/TLS on the UI thread.
+    }
+
+    func start() throws {
+        guard _server == nil else { return }
+        try _setup()
+        _needsShutdown = true
+        do {
+            try _configureRoutes()
+            try _server?.server.start()
+        } catch {
+            _shutdownServer()
+            _server = nil
+            throw error
+        }
 	}
 	
-	deinit {
-		_shutdownServer()
-	}
+    deinit {
+        if _needsShutdown, let server = _server {
+            DispatchQueue.global(qos: .utility).async {
+                server.server.shutdown()
+                server.shutdown()
+            }
+        }
+    }
 	
 	private func _setup() throws {
-		self._server = try? setupApp(port: port)
+		self._server = try setupApp(port: port)
 	}
 		
 	private func _configureRoutes() throws {

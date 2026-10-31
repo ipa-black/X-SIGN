@@ -31,7 +31,8 @@ final class ArchiveHandler: NSObject {
 	}
 	
 	func move() async throws {
-		guard let appUrl = Storage.shared.getAppDirectory(for: _app) else {
+		let storedURL = await MainActor.run { Storage.shared.getAppDirectory(for: self._app) }
+		guard let appUrl = storedURL else {
 			throw SigningFileHandlerError.appNotFound
 		}
 		
@@ -44,7 +45,7 @@ final class ArchiveHandler: NSObject {
 		_payloadUrl = payloadUrl
 	}
 	
-	func archive() async throws -> URL {
+	func archive(forLocalInstallation: Bool = false) async throws -> URL {
 		return try await Task.detached(priority: .userInitiated) { [self] in
 			guard let payloadUrl = await self._payloadUrl else {
 				throw SigningFileHandlerError.appNotFound
@@ -53,12 +54,14 @@ final class ArchiveHandler: NSObject {
 			let zipUrl = self._uniqueWorkDir.appendingPathComponent("Archive.zip")
 			let ipaUrl = self._uniqueWorkDir.appendingPathComponent("Archive.ipa")
 			
+            let progressGate = XSignDownloadProgressGate()
 			try await Zip.zipFiles(
 				paths: [payloadUrl],
 				zipFilePath: zipUrl,
 				password: nil,
-				compression: ZipCompression.allCases[min(ZipCompression.allCases.count - 1, max(0, ArchiveHandler.getCompressionLevel()))],
+				compression: forLocalInstallation ? .NoCompression : ZipCompression.allCases[min(ZipCompression.allCases.count - 1, max(0, ArchiveHandler.getCompressionLevel()))],
 				progress: { progress in
+                    guard progress.isFinite, progressGate.shouldPublish(Int(progress * 100)) else { return }
 					Task { @MainActor in
 						self.viewModel.packageProgress = progress
 					}
@@ -70,17 +73,18 @@ final class ArchiveHandler: NSObject {
 	}
 	
 	func moveToArchive(_ package: URL, shouldOpen: Bool = false) async throws -> URL? {
-		let appendingString = "\(_app.name!)_\(_app.version!)_\(Int(Date().timeIntervalSince1970)).ipa"
+		let values = await MainActor.run { (self._app.name, self._app.version) }
+        let appendingString = XSignAppMetadata.archiveFileName(name: values.0, version: values.1, suffix: "\(Int(Date().timeIntervalSince1970))_\(_uuid.prefix(8))")
 		let dest = _fileManager.archives.appendingPathComponent(appendingString)
 		
-		try? _fileManager.moveItem(
+		try _fileManager.moveItem(
 			at: package,
 			to: dest
 		)
 		
-		if shouldOpen {
+		if shouldOpen, let sharedURL = FileManager.default.archives.toSharedDocumentsURL() {
 			await MainActor.run {
-				UIApplication.open(FileManager.default.archives.toSharedDocumentsURL()!)
+				UIApplication.open(sharedURL)
 			}
 		}
 		

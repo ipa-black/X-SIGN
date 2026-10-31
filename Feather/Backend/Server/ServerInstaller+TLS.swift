@@ -16,21 +16,24 @@ import SystemConfiguration.CaptiveNetwork
 // MARK: - Class extension: TLS/Setup
 extension ServerInstaller {
 	// MARK: Setup
-	static let env: Environment = {
-		var env = try! Environment.detect()
-		try! LoggingSystem.bootstrap(from: &env)
-		return env
-	}()
+    private static let environmentResult: Result<Environment, Error> = Result {
+        var environment = try Environment.detect()
+        try LoggingSystem.bootstrap(from: &environment)
+        return environment
+    }
 	
 	func setupApp(port: Int) throws -> Application {
-		let app = Application(Self.env)
+		let app = Application(try Self.environmentResult.get())
 		app.threadPool = .init(numberOfThreads: 1)
 		
-		if getServerMethod() != 1 {
-			if let tls = try tls() {
-				app.http.server.configuration.tlsConfiguration = tls
-			}
-		}
+        do {
+            if getServerMethod() != 1 {
+                guard let tls = try tls() else {
+                    throw NSError(domain: "XSign.Installation", code: 1, userInfo: [NSLocalizedDescriptionKey: "شهادة السيرفر المحلي غير متاحة. راجع إعدادات Server & SSL."])
+                }
+                app.http.server.configuration.tlsConfiguration = tls
+            }
+        } catch { app.shutdown(); throw error }
 		
 		app.http.server.configuration.hostname = sni()
 		app.http.server.configuration.tcpNoDelay = true

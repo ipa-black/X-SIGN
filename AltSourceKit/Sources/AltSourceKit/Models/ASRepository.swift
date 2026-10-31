@@ -136,6 +136,11 @@ extension ASRepository {
 		public var id: String?
 		public var name: String?
 
+        // A catalog row may be a mod variant of the same real bundle identifier.
+        // Keep the actual bundle ID unchanged for Apple lookups and signing.
+        public var catalogID: String?
+        public var stableCatalogIdentifier: String { catalogID ?? id ?? currentName }
+
 		public var subtitle: String?
 		public var description: String?
 
@@ -246,6 +251,7 @@ extension ASRepository {
 			let container = try decoder.container(keyedBy: CodingKeys.self)
 			self.id = try container.decodeIfPresent(String.self, forKey: .id)
 			self.name = try container.decodeIfPresent(String.self, forKey: .name)
+            self.catalogID = try container.decodeIfPresent(String.self, forKey: .catalogID)
 
 			self.subtitle = try container.decodeIfPresent(
 				String.self,
@@ -344,7 +350,7 @@ extension ASRepository {
 
 		public enum CodingKeys: String, CodingKey {
 			case id = "bundleIdentifier"
-			case name, subtitle, description
+			case name, subtitle, description, catalogID
 			case developer = "developerName"
 			case versions, version, versionDate, date, versionDescription, downloadURL,
 			     localizedDescription, iconURL, tintColor, size, category, beta, skipAppStoreLookup

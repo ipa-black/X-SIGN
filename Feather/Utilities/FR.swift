@@ -40,9 +40,10 @@ enum FR {
         _ ipa: URL,
         download: Download? = nil,
         sourceProvenance: SourceAppProvenance? = nil,
+        consumeTemporaryFile: Bool = false,
         completion: @escaping (Error?) -> Void
     ) {
-        importPackageFile(ipa, download: download, sourceProvenance: sourceProvenance) { result in
+        importPackageFile(ipa, download: download, sourceProvenance: sourceProvenance, consumeTemporaryFile: consumeTemporaryFile) { result in
             switch result {
             case .success: completion(nil)
             case .failure(let error): completion(error)
@@ -54,11 +55,12 @@ enum FR {
         _ ipa: URL,
         download: Download? = nil,
         sourceProvenance: SourceAppProvenance? = nil,
+        consumeTemporaryFile: Bool = false,
         completion: @escaping @MainActor (Result<String, Error>) -> Void
     ) {
         Task.detached {
             await FRPackageWorkGate.shared.acquire()
-            let handler = AppFileHandler(file: ipa, download: download, sourceProvenance: sourceProvenance)
+            let handler = AppFileHandler(file: ipa, download: download, sourceProvenance: sourceProvenance, consumeTemporaryFile: consumeTemporaryFile)
             do {
                 try await handler.copy()
                 try await handler.extract()
@@ -97,6 +99,7 @@ enum FR {
         using options: Options,
         icon: UIImage?,
         certificate: CertificatePair?,
+        preserveBundleForBatch: Bool = false,
         completion: @escaping @MainActor (Result<String, Error>) -> Void
     ) {
         Task.detached {
@@ -109,18 +112,44 @@ enum FR {
             }
             let locks = await MainActor.run { XSignSecurityEnforcer.shared.locks }
             var permittedOptions = options
-            if locks.lock_bundle_rename ?? true {
+            if !locks.allowsAppMetadataEditing {
                 permittedOptions.appName = nil
                 permittedOptions.appIdentifier = nil
+                permittedOptions.matchCertificateAppID = false
+                permittedOptions.appVersion = nil
                 permittedOptions.identifiers = [:]
                 permittedOptions.displayNames = [:]
                 permittedOptions.ppqProtection = false
                 permittedOptions.dynamicProtection = false
                 permittedOptions.changeLanguageFilesForCustomDisplayName = false
             }
+            permittedOptions.appName = permittedOptions.appName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            permittedOptions.appIdentifier = permittedOptions.appIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)
+            permittedOptions.appVersion = permittedOptions.appVersion?.trimmingCharacters(in: .whitespacesAndNewlines)
             if locks.lock_dylib_injection ?? true {
                 permittedOptions.injectionFiles = []
                 permittedOptions.experiment_replaceSubstrateWithEllekit = false
+            }
+            if permittedOptions.signingOption == .default && permittedOptions.matchCertificateAppID == true {
+                do {
+                    let input = try await MainActor.run { () throws -> (URL, String) in
+                        guard let certificate, let url = Storage.shared.getFile(.provision, from: certificate) else {
+                            throw SigningFileHandlerError.missingCertifcate
+                        }
+                        return (url, app.identifier ?? "")
+                    }
+                    let profile = try XSignProvisioningProfile.read(at: input.0)
+                    let current = permittedOptions.appIdentifier ?? input.1
+                    permittedOptions.appIdentifier = try profile.identifier(for: current, matchExactID: !preserveBundleForBatch)
+                    if !profile.isWildcard {
+                        permittedOptions.ppqProtection = false
+                        permittedOptions.dynamicProtection = false
+                    }
+                } catch {
+                    await FRPackageWorkGate.shared.release()
+                    await MainActor.run { completion(.failure(error)) }
+                    return
+                }
             }
             let handler = SigningHandler(app: app, options: permittedOptions)
             handler.appCertificate = certificate
@@ -165,6 +194,7 @@ enum FR {
 					completion(nil)
 				}
 			} catch {
+                await handler.cleanAfterFailure()
 				await MainActor.run {
 					completion(error)
 				}

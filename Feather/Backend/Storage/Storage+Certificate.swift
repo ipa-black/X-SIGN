@@ -30,10 +30,15 @@ extension Storage {
 		new.expiration = expiration
 		new.nickname = nickname
 		new.isDefault = isDefault
-		Storage.shared.revokagedCertificate(for: new)
-		saveContext()
-		generator.impactOccurred()
-		completion(nil)
+        do {
+            try saveContextNow()
+            revokagedCertificate(for: new)
+            generator.impactOccurred()
+            completion(nil)
+        } catch {
+            context.delete(new)
+            completion(error)
+        }
 	}
 	
 	func deleteCertificate(for cert: CertificatePair) {

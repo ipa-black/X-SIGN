@@ -39,7 +39,8 @@ final class SigningHandler: NSObject {
 	}
 	
 	func copy() async throws {
-		guard let appUrl = Storage.shared.getAppDirectory(for: _app) else {
+		let storedURL = await MainActor.run { Storage.shared.getAppDirectory(for: self._app) }
+		guard let appUrl = storedURL else {
 			throw SigningFileHandlerError.appNotFound
 		}
 
@@ -57,14 +58,11 @@ final class SigningHandler: NSObject {
 			throw SigningFileHandlerError.appNotFound
 		}
 		
-		guard
-			let infoDictionary = NSDictionary(
-				contentsOf: movedAppPath.appendingPathComponent("Info.plist")
-			)!.mutableCopy() as? NSMutableDictionary
-		else {
-			throw SigningFileHandlerError.infoPlistNotFound
-		}
-		
+        let infoDictionary = try XSignAppMetadata.readInfo(at: movedAppPath.appendingPathComponent("Info.plist"))
+        if _options.signingOption == .default {
+            try XSignMachOEncryption.verifyPayload(at: movedAppPath.deletingLastPathComponent())
+        }
+
 		if
 			let identifier = _options.appIdentifier,
 			let oldIdentifier = infoDictionary["CFBundleIdentifier"] as? String
@@ -124,12 +122,9 @@ final class SigningHandler: NSObject {
 			throw SigningFileHandlerError.missingCertifcate
 		}
 		
-		try await self.move()
-		try await self.addToDatabase()
-		
-		if let error = handler.hadError {
-			throw error
-		}
+        if let error = handler.hadError { throw error }
+        try await self.move()
+        try await self.addToDatabase()
 	}
 	
 	func move() async throws {
@@ -158,7 +153,7 @@ final class SigningHandler: NSObject {
                           userInfo: [NSLocalizedDescriptionKey: "تعذّر العثور على محتويات التطبيق الموقّع."])
 		}
 		
-		await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+		try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
 			let bundle = Bundle(url: appUrl)
 			
 			Storage.shared.addSigned(
@@ -169,10 +164,10 @@ final class SigningHandler: NSObject {
 				appIdentifier: bundle?.bundleIdentifier,
 				appVersion: bundle?.version,
 				appIcon: bundle?.iconFileName
-			) { _ in
-				Logger.signing.info("[\(self._uuid)] Added to database")
-				continuation.resume()
-			}
+            ) { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
 		}
 		
 		Storage.shared.copySourceMetadata(
@@ -218,18 +213,9 @@ extension SigningHandler {
 		
 		// MARK: Prominant values
 		
-		if let customIdentifier = options.appIdentifier {
-			infoDictionary.setObject(customIdentifier, forKey: "CFBundleIdentifier" as NSCopying)
-		}
-		if let customName = options.appName {
-			infoDictionary.setObject(customName, forKey: "CFBundleDisplayName" as NSCopying)
-			infoDictionary.setObject(customName, forKey: "CFBundleName" as NSCopying)
-		}
-		if let customVersion = options.appVersion {
-			infoDictionary.setObject(customVersion, forKey: "CFBundleShortVersionString" as NSCopying)
-			infoDictionary.setObject(customVersion, forKey: "CFBundleVersion" as NSCopying)
-		}
-		
+        try XSignAppMetadata.apply(name: options.appName, bundleIdentifier: options.appIdentifier,
+            version: options.appVersion, to: infoDictionary)
+
 		try infoDictionary.write(to: app.appendingPathComponent("Info.plist"))
 	}
 	
@@ -454,15 +440,16 @@ extension SigningHandler {
 			return
 		}
 		
-		guard 
-			let cert = self.appCertificate, 
-			let ourEntitlements = CertificateReader(Storage.shared.getFile(.provision, from: cert)).decoded
-		else {
+        let provisionURL = await MainActor.run {
+            self.appCertificate.flatMap { Storage.shared.getFile(.provision, from: $0) }
+        }
+        guard let ourEntitlements = CertificateReader(provisionURL).decoded,
+              let ourTeamIdentifier = ourEntitlements.TeamIdentifier.first else {
 			return 
 		}
 		
-		let ourTeamIdentifier = ourEntitlements.TeamIdentifier[0]
-		let ourBundleIdentifer = options.appIdentifier ?? _app.identifier
+		let originalIdentifier = await MainActor.run { self._app.identifier }
+		let ourBundleIdentifer = options.appIdentifier ?? originalIdentifier
 		
 		var baseDictionary: [String: Any] = (ourEntitlements.Entitlements ?? [:]).mapValues { $0.value }
 		let additionsDictionary: [String: Any] = binaryEntitlementsDict

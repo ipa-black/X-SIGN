@@ -29,18 +29,22 @@ class Download: Identifiable, @unchecked Sendable {
 	let url: URL
 	let fileName: String
 	let onlyArchiving: Bool
+    let requireUnencryptedBinary: Bool
+    let transferProgressGate = XSignDownloadProgressGate()
 	var sourceProvenance: SourceAppProvenance?
 	
 	init(
 		id: String,
 		url: URL,
 		onlyArchiving: Bool = false,
-		sourceProvenance: SourceAppProvenance? = nil
+		sourceProvenance: SourceAppProvenance? = nil,
+        requireUnencryptedBinary: Bool = false
 	) {
 		self.id = id
 		self.url = url
 		self.onlyArchiving = onlyArchiving
 		self.sourceProvenance = sourceProvenance
+        self.requireUnencryptedBinary = requireUnencryptedBinary
 		self.fileName = url.lastPathComponent
 	}
 }
@@ -55,6 +59,22 @@ class DownloadManager: NSObject, ObservableObject {
 	}
 	
 	private var _session: URLSession!
+    private let transferLock = NSLock()
+    private var taskDownloads: [Int: Download] = [:]
+
+    private func attach(_ task: URLSessionDownloadTask, to download: Download) {
+        download.task = task
+        transferLock.lock()
+        taskDownloads = taskDownloads.filter { $0.value.id != download.id }
+        taskDownloads[task.taskIdentifier] = download
+        transferLock.unlock()
+    }
+
+    private func forget(_ task: URLSessionTask) {
+        transferLock.lock()
+        taskDownloads.removeValue(forKey: task.taskIdentifier)
+        transferLock.unlock()
+    }
 	
 	#if !targetEnvironment(macCatalyst)
 	private func _updateBackgroundAudioState() {
@@ -77,20 +97,22 @@ class DownloadManager: NSObject, ObservableObject {
 	func startDownload(
 		from url: URL,
 		id: String = UUID().uuidString,
-		sourceProvenance: SourceAppProvenance? = nil
+		sourceProvenance: SourceAppProvenance? = nil,
+        requireUnencryptedBinary: Bool = false
 	) -> Download {
 		let requestHasSourceProvenance = sourceProvenance != nil
 		if let existingDownload = downloads.first(where: {
-			$0.url == url && ($0.sourceProvenance != nil) == requestHasSourceProvenance
+			$0.url == url && ($0.sourceProvenance != nil) == requestHasSourceProvenance && $0.requireUnencryptedBinary == requireUnencryptedBinary
 		}) {
-			resumeDownload(existingDownload)
-			return existingDownload
+            // The original request may be checking policy, downloading or importing.
+            // A repeated tap must not create a second transfer for the same file.
+            return existingDownload
 		}
 		
-		let download = Download(id: id, url: url, sourceProvenance: sourceProvenance)
+		let download = Download(id: id, url: url, sourceProvenance: sourceProvenance, requireUnencryptedBinary: requireUnencryptedBinary)
 		
 		let task = _session.downloadTask(with: url)
-		download.task = task
+		attach(task, to: download)
         Task { @MainActor in
             if let reason = await XSignRemoteManager.shared.prepareProtectedOperation() {
                 self.cancelDownload(download)
@@ -128,9 +150,11 @@ class DownloadManager: NSObject, ObservableObject {
 	}
 	
 	func resumeDownload(_ download: Download) {
+        if download.task?.state == .running { return }
 		if let resumeData = download.resumeData {
 			let task = _session.downloadTask(withResumeData: resumeData)
-			download.task = task
+			attach(task, to: download)
+            download.resumeData = nil
             Task { @MainActor in
                 if let reason = await XSignRemoteManager.shared.prepareProtectedOperation() {
                     self.cancelDownload(download)
@@ -143,7 +167,7 @@ class DownloadManager: NSObject, ObservableObject {
 			#endif
 		} else if let url = download.task?.originalRequest?.url {
 			let task = _session.downloadTask(with: url)
-			download.task = task
+			attach(task, to: download)
             Task { @MainActor in
                 if let reason = await XSignRemoteManager.shared.prepareProtectedOperation() {
                     self.cancelDownload(download)
@@ -159,6 +183,7 @@ class DownloadManager: NSObject, ObservableObject {
 	
 	func cancelDownload(_ download: Download) {
 		download.task?.cancel()
+        if let task = download.task { forget(task) }
 		
 		if let index = downloads.firstIndex(where: { $0.id == download.id }) {
 			downloads.remove(at: index)
@@ -186,17 +211,21 @@ class DownloadManager: NSObject, ObservableObject {
 	}
 	
 	func getDownloadTask(by task: URLSessionDownloadTask) -> Download? {
-		return downloads.first(where: { $0.task == task })
+		transferLock.lock()
+        defer { transferLock.unlock() }
+        return taskDownloads[task.taskIdentifier]
 	}
 }
 
 extension DownloadManager: URLSessionDownloadDelegate {
 	
 	func handlePachageFile(url: URL, dl: Download) throws {
-		FR.handlePackageFile(url, download: dl) { err in
+		FR.handlePackageFile(url, download: dl, consumeTemporaryFile: true) { err in
+            try? FileManager.default.removeItem(at: url)
 			if err != nil {
 				let generator = UINotificationFeedbackGenerator()
 				generator.notificationOccurred(.error)
+                UIAlertController.showAlertWithOk(title: "تعذّر استيراد IPA", message: err?.localizedDescription ?? "ملف التطبيق غير صالح.")
 			}
 			
 			DispatchQueue.main.async {
@@ -206,6 +235,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
 					#if !targetEnvironment(macCatalyst)
 					if #available(iOS 26.0, *) {
 						BackgroundTaskManager.shared.updateProgress(for: dl.id, progress: 1.0)
+                        BackgroundTaskManager.shared.stopTask(for: dl.id, success: err == nil)
 					}
 					
 					self._updateBackgroundAudioState()
@@ -217,30 +247,45 @@ extension DownloadManager: URLSessionDownloadDelegate {
 	
 	func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
 		guard let download = getDownloadTask(by: downloadTask) else { return }
+        defer { forget(downloadTask) }
 		
 		let tempDirectory = FileManager.default.temporaryDirectory
 		let customTempDir = tempDirectory.appendingPathComponent("FeatherDownloads", isDirectory: true)
 		
 		do {
+            guard let response = downloadTask.response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
 			try FileManager.default.createDirectoryIfNeeded(at: customTempDir)
 			
 			// Use the server-suggested filename if available, otherwise fallback
 			let suggestedFileName = downloadTask.response?.suggestedFilename ?? download.fileName
-			let destinationURL = customTempDir.appendingPathComponent(suggestedFileName)
+            let suggestedExtension = URL(fileURLWithPath: suggestedFileName).pathExtension.lowercased()
+            let ext = ["ipa", "tipa", "zip"].contains(suggestedExtension) ? suggestedExtension : "ipa"
+            // Resolver URLs may end in .php; independent downloads must never overwrite each other.
+			let destinationURL = customTempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext)
 			
 			try FileManager.default.removeFileIfNeeded(at: destinationURL)
 			try FileManager.default.moveItem(at: location, to: destinationURL)
 			
 			try handlePachageFile(url: destinationURL, dl: download)
 		} catch {
-			print("Error handling downloaded file: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                self.cancelDownload(download)
+                UIAlertController.showAlertWithOk(title: "تعذّر تنزيل IPA", message: error.localizedDescription)
+            }
 		}
 	}
 	
 	func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
 		guard let download = getDownloadTask(by: downloadTask) else { return }
+        let tick = totalBytesExpectedToWrite > 0
+            ? Int(min(100, max(0, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) * 100)))
+            : Int(totalBytesWritten / 262_144)
+        guard download.transferProgressGate.shouldPublish(tick) else { return }
 		
 		DispatchQueue.main.async {
+            guard self.downloads.contains(where: { $0.id == download.id }) else { return }
 			download.progress = totalBytesExpectedToWrite > 0
 			? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
 			: 0
@@ -263,11 +308,12 @@ extension DownloadManager: URLSessionDownloadDelegate {
 		else {
 			return
 		}
-		
+        forget(downloadTask)
 		DispatchQueue.main.async {
-			if let index = self.getDownloadIndex(by: download.id) {
-				self.downloads.remove(at: index)
-			}
+            self.cancelDownload(download)
+            if let error, (error as? URLError)?.code != .cancelled {
+                UIAlertController.showAlertWithOk(title: "تعذّر تنزيل IPA", message: error.localizedDescription)
+            }
 		}
 	}
 }

@@ -219,26 +219,29 @@ extension SigningView {
 				SigningPropertiesView(
 					title: .localized("Name"),
 					initialValue: _temporaryOptions.appName ?? (app.name ?? ""),
-					bindingValue: $_temporaryOptions.appName
+					bindingValue: $_temporaryOptions.appName,
+                    field: .name, originalValue: app.name
                 )
-            }.disabled(policy.locks.lock_bundle_rename ?? true)
+            }.disabled(!policy.locks.allowsAppMetadataEditing)
 			_infoCell(.localized("Identifier"), desc: _temporaryOptions.appIdentifier ?? app.identifier) {
 				SigningPropertiesView(
 					title: .localized("Identifier"),
 					initialValue: _temporaryOptions.appIdentifier ?? (app.identifier ?? ""),
-					bindingValue: $_temporaryOptions.appIdentifier
+					bindingValue: $_temporaryOptions.appIdentifier,
+                    field: .bundleIdentifier, originalValue: app.identifier
                 )
-            }.disabled(policy.locks.lock_bundle_rename ?? true)
+            }.disabled(!policy.locks.allowsAppMetadataEditing)
 			
-			_cloneRow(for: app).disabled(policy.locks.lock_bundle_rename ?? true)
+			_cloneRow(for: app).disabled(!policy.locks.allowsAppMetadataEditing)
 			
 			_infoCell(.localized("Version"), desc: _temporaryOptions.appVersion ?? app.version) {
 				SigningPropertiesView(
 					title: .localized("Version"),
 					initialValue: _temporaryOptions.appVersion ?? (app.version ?? ""),
-					bindingValue: $_temporaryOptions.appVersion
+					bindingValue: $_temporaryOptions.appVersion,
+                    field: .version, originalValue: app.version
 				)
-			}
+			}.disabled(!policy.locks.allowsAppMetadataEditing)
 		}
 	}
 	
@@ -390,6 +393,16 @@ extension SigningView {
 // MARK: - Extension: View (import)
 extension SigningView {
 	private func _start() {
+        if policy.locks.allowsAppMetadataEditing {
+            do {
+                _ = try XSignAppMetadata.validated(_temporaryOptions.appName, field: .name, original: app.name)
+                _ = try XSignAppMetadata.validated(_temporaryOptions.appIdentifier, field: .bundleIdentifier, original: app.identifier)
+                _ = try XSignAppMetadata.validated(_temporaryOptions.appVersion, field: .version, original: app.version)
+            } catch {
+                UIAlertController.showAlertWithOk(title: "معلومات التطبيق", message: error.localizedDescription)
+                return
+            }
+        }
 		guard
 			_selectedCert() != nil || _temporaryOptions.signingOption != .default
 		else {

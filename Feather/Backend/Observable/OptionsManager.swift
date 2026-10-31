@@ -70,6 +70,8 @@ struct Options: Codable, Equatable, Sendable {
 	var appIdentifier: String?
 	/// App entitlements
 	var appEntitlementsFile: URL?
+	/// Opt-in matching; optional keeps older saved configurations decodable.
+	var matchCertificateAppID: Bool?
 	/// App apparence (i.e. Light/Dark/Default)
 	var appAppearance: AppAppearance
 	/// App minimum iOS requirement (i.e. iOS 11.0)

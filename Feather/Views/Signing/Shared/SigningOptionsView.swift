@@ -23,7 +23,7 @@ struct SigningOptionsView: View {
 					systemImage: "shield",
 					isOn: $options.ppqProtection,
 					temporaryValue: temporaryOptions?.ppqProtection
-				).disabled(policy.locks.lock_bundle_rename ?? true)
+				).disabled(!policy.locks.allowsAppMetadataEditing)
 			} footer: {
 				Text(.localized("Enabling any protection will append a random string to the bundleidentifiers of the apps you sign, this is to ensure your Apple ID does not get flagged by Apple. However, when using a signing service you can ignore this."))
 			}
@@ -54,6 +54,15 @@ struct SigningOptionsView: View {
 			)
 		}
 		
+        Section {
+            _toggle("مطابقة بندل الشهادة", systemImage: "checkmark.seal",
+                isOn: Binding(get: { options.matchCertificateAppID == true }, set: { options.matchCertificateAppID = $0 }),
+                temporaryValue: temporaryOptions.map { $0.matchCertificateAppID == true })
+                .disabled(!policy.locks.allowsAppMetadataEditing || options.signingOption != .default)
+        } footer: {
+            Text("عند التفعيل يُستخدم App ID المحدد في البروفايل بدل بندل التطبيق. البروفايل العام يحافظ على البندل إذا كان ضمن نطاقه. قد يؤثر تغيير البندل في خدمات التطبيق وبياناته.")
+        }
+
 		if (temporaryOptions == nil) {
 			NBSection(.localized("Tweaks")) {
 				Self.picker(
@@ -140,7 +149,7 @@ struct SigningOptionsView: View {
 				systemImage: "character.bubble",
 				isOn: $options.changeLanguageFilesForCustomDisplayName,
 				temporaryValue: temporaryOptions?.changeLanguageFilesForCustomDisplayName
-			).disabled(policy.locks.lock_bundle_rename ?? true)
+			).disabled(!policy.locks.allowsAppMetadataEditing)
 		} footer: {
 			Text(.localized("By default, localized titles for the app won't be changed, however this option overrides it."))
 		}

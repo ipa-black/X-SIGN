@@ -37,8 +37,13 @@ extension Storage {
 		new.icon = appIcon
 		new.version = appVersion
 		
-		saveContext()
-		generator.impactOccurred()
-		completion(nil)
+        do {
+            try saveContextNow()
+            generator.impactOccurred()
+            completion(nil)
+        } catch {
+            context.delete(new)
+            completion(error)
+        }
 	}
 }

@@ -20,17 +20,20 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 	private let _install: Bool
 	private let _download: Download?
 	private let _sourceProvenance: SourceAppProvenance?
+    private let _consumeTemporaryFile: Bool
 	
 	init(
 		file ipa: URL,
 		install: Bool = false,
 		download: Download? = nil,
-		sourceProvenance: SourceAppProvenance? = nil
+		sourceProvenance: SourceAppProvenance? = nil,
+        consumeTemporaryFile: Bool = false
 	) {
 		self._ipa = ipa
 		self._install = install
 		self._download = download
 		self._sourceProvenance = sourceProvenance ?? download?.sourceProvenance
+        self._consumeTemporaryFile = consumeTemporaryFile
 		self._uniqueWorkDir = _fileManager.temporaryDirectory
 			.appendingPathComponent("FeatherImport_\(_uuid)", isDirectory: true)
 		
@@ -44,7 +47,16 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 
 		try _fileManager.removeFileIfNeeded(at: destinationURL)
 		
-		try _fileManager.copyItem(at: _ipa, to: destinationURL)
+        if _consumeTemporaryFile {
+            let temporary = _fileManager.temporaryDirectory.resolvingSymlinksInPath().path + "/"
+            guard _ipa.resolvingSymlinksInPath().path.hasPrefix(temporary) else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            // The caller owns this temporary download. Rename instead of copying the whole IPA.
+            try _fileManager.moveItem(at: _ipa, to: destinationURL)
+        } else {
+            try _fileManager.copyItem(at: _ipa, to: destinationURL)
+        }
 		_ipa = destinationURL
 	}
 	
@@ -57,6 +69,7 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 		}
 		
 		let download = self._download
+        let progressGate = XSignDownloadProgressGate()
 		
 		try await withCheckedThrowingContinuation { continuation in
 			DispatchQueue.global(qos: .utility).async {
@@ -67,7 +80,8 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 						overwrite: true,
 						password: nil,
 						progress: { progress in
-							if let download = download {
+                            if let download = download, progress.isFinite,
+                               progressGate.shouldPublish(Int(max(0, min(1, progress)) * 100)) {
 								DispatchQueue.main.async {
 									download.unpackageProgress = progress
 									
@@ -82,6 +96,9 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 					)
 					
 					self.uniqueWorkDirPayload = self._uniqueWorkDir.appendingPathComponent("Payload")
+                    if download?.requireUnencryptedBinary == true, let payload = self.uniqueWorkDirPayload {
+                        try XSignMachOEncryption.verifyPayload(at: payload)
+                    }
 					continuation.resume()
 				} catch {
 					continuation.resume(throwing: error)
@@ -116,6 +133,7 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 		
 		let bundle = Bundle(url: appUrl)
 		
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
 		Storage.shared.addImported(
 			uuid: _uuid,
 			source: _sourceProvenance?.sourceRepositoryURL,
@@ -123,7 +141,11 @@ final class AppFileHandler: NSObject, @unchecked Sendable {
 			appIdentifier: bundle?.bundleIdentifier,
 			appVersion: bundle?.version,
 			appIcon: bundle?.iconFileName
-		) { _ in }
+        ) { error in
+            if let error { continuation.resume(throwing: error) }
+            else { continuation.resume() }
+        }
+        }
 		
 		if let sourceProvenance = _sourceProvenance {
 			Storage.shared.addSourceMetadata(

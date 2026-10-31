@@ -15,6 +15,7 @@ clean:
 	rm -rf _build
 
 deps:
+	python3 Tools/Prepare_Zsign.py
 	rm -rf deps || true
 	mkdir -p deps
 

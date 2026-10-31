@@ -21,6 +21,7 @@ struct InstallPreviewView: View {
 	@State private var progressTask: Task<Void, Never>?
     @State private var installLinkTask: Task<Void, Never>?
     @State private var didRequestInstallation = false
+    @State private var didStartPreparation = false
 	
 	var app: AppInfoPresentable
 	@StateObject var viewModel: InstallerStatusViewModel
@@ -33,7 +34,7 @@ struct InstallPreviewView: View {
 		self.isSharing = isSharing
 		let viewModel = InstallerStatusViewModel(isIdevice: UserDefaults.standard.integer(forKey: "Feather.installationMethod") == 1)
 		self._viewModel = StateObject(wrappedValue: viewModel)
-		self._installer = StateObject(wrappedValue: try! ServerInstaller(app: app, viewModel: viewModel))
+		self._installer = StateObject(wrappedValue: ServerInstaller(app: app, viewModel: viewModel))
 	}
 	
 	// MARK: Body
@@ -82,9 +83,9 @@ struct InstallPreviewView: View {
 				}
 				
 				if case .installing = newStatus {
-					if progressTask == nil {
+					if progressTask == nil, let bundleID = app.identifier, !bundleID.isEmpty {
 						progressTask = startInstallProgressPolling(
-							bundleID: app.identifier!,
+							bundleID: bundleID,
 							viewModel: viewModel
 						)
 					}
@@ -149,7 +150,13 @@ struct InstallPreviewView: View {
 	}
 	
 	private func _install() {
-		guard isSharing || app.identifier != Bundle.main.bundleIdentifier! || _installationMethod == 1 else {
+        guard !didStartPreparation else { return }
+        if !isSharing && (app.identifier ?? "").isEmpty {
+            viewModel.status = .broken(NSError(domain: "XSign.Installation", code: 2, userInfo: [NSLocalizedDescriptionKey: "معرّف التطبيق مفقود. راجع معلومات التطبيق ثم أعد توقيعه."]))
+            return
+        }
+        didStartPreparation = true
+		guard isSharing || app.identifier != Bundle.main.bundleIdentifier || _installationMethod == 1 else {
 			UIAlertController.showAlertWithOk(
 				title: .localized("Install"),
 				message: .localized("You cannot update ‘%@‘ with itself, please use an alternative tool to update it.", arguments: Bundle.main.name)
@@ -165,9 +172,11 @@ struct InstallPreviewView: View {
             do {
                 let handler = await ArchiveHandler(app: app, viewModel: viewModel)
                 try await handler.move()
-                let packageURL = try await handler.archive()
+                let packageURL = try await handler.archive(forLocalInstallation: !sharing && method == 0)
                 if !sharing {
                     if method == 0 {
+                        // IPA is streamed directly from this device; no upload/re-download round trip.
+                        try installer.start()
                         await MainActor.run {
                             installer.packageUrl = packageURL
                             viewModel.status = .ready

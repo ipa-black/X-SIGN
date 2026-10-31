@@ -75,12 +75,17 @@ struct XSignForceUpdate: Codable, Equatable, Sendable {
 }
 
 struct XSignSecurityLocks: Codable, Equatable, Sendable {
+	let allow_app_metadata_editing: Bool?
 	let lock_bundle_rename: Bool?
 	let lock_icon_change: Bool?
 	let lock_dylib_injection: Bool?
 	let anti_vpn_proxy: Bool?
 	let require_online_handshake: Bool?
 	let vpn_warning_message: String?
+
+    var allowsAppMetadataEditing: Bool {
+        XSignAppMetadata.editingAllowed(allow_app_metadata_editing)
+    }
 }
 
 struct XSignCoreSourceItem: Codable, Equatable, Sendable {
@@ -108,6 +113,7 @@ final class XSignSecurityEnforcer: ObservableObject {
 	private let monitorQueue = DispatchQueue(label: "com.ipablack.xsign.netguard", qos: .utility)
 	
 	@Published var locks: XSignSecurityLocks = XSignSecurityLocks(
+        allow_app_metadata_editing: true,
 		lock_bundle_rename: true,
 		lock_icon_change: true,
 		lock_dylib_injection: true,
@@ -212,7 +218,7 @@ final class XSignSecurityEnforcer: ObservableObject {
 		if isVPNOrProxyDetected {
 			return (false, locks.vpn_warning_message ?? "يرجى إيقاف الـ VPN أو مراقب الشبكة أولاً.")
 		}
-		if (locks.lock_bundle_rename ?? true) && (originalName != newName || originalBundleID != newBundleID) {
+		if !locks.allowsAppMetadataEditing && (originalName != newName || originalBundleID != newBundleID) {
 			return (false, "غير مسموح بتعديل اسم التطبيق أو معرف الحزمة (Bundle ID).")
 		}
 		if (locks.lock_icon_change ?? true) && didModifyIcon {
@@ -457,7 +463,7 @@ struct FeatherApp: App {
 	@StateObject private var sourcesViewModel = SourcesViewModel.shared
 	@StateObject private var remoteManager = XSignRemoteManager.shared
 	@StateObject private var securityEnforcer = XSignSecurityEnforcer.shared
-	let storage = Storage.shared
+	@StateObject private var storage = Storage.shared
 	
 	@AppStorage("Feather.userTintColor") private var userTintHex: String = "#005BBB"
     @AppStorage("Feather.userInterfaceStyle")
@@ -489,6 +495,9 @@ struct FeatherApp: App {
 	
 	var body: some Scene {
 		WindowGroup {
+            Group {
+                if !storage.isStoreLoaded { XSignStorageLoadView(storage: storage) }
+                else {
 			ZStack {
 				VStack(spacing: 0) {
 					if remoteManager.config?.app_control?.top_banner_enabled == true,
@@ -570,12 +579,14 @@ struct FeatherApp: App {
             }
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
-                let sources = storage.getSources()
-                Task { @MainActor in await storeCache.ensureFetched(sources: sources, viewModel: sourcesViewModel) }
                 while !Task.isCancelled {
                     await remoteManager.fetchRemoteConfig(storeCache: storeCache, sourcesViewModel: sourcesViewModel)
                     do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { break }
                 }
+            }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await storeCache.runAutomaticUpdates(sources: { storage.getSources() }, viewModel: sourcesViewModel)
             }
             .onReceive(NotificationCenter.default.publisher(for: .xsignPolicyChanged)) { _ in
                 autoSign.applyRemotePolicy()
@@ -603,6 +614,8 @@ struct FeatherApp: App {
 				}
                 applyAppearanceToWindows()
 			}
+                }
+            }
 		}
 	}
 	
@@ -1005,7 +1018,10 @@ struct XSignPhotoIdenticalSplashView: View {
     }
 }
 
+@MainActor
 class AppDelegate: NSObject, UIApplicationDelegate {
+    private var storeReadySubscription: AnyCancellable?
+    private var didPrepareStorage = false
 	func application(
 		_ application: UIApplication,
 		didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -1013,8 +1029,13 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 		_createLowMemoryPipeline()
 		_createDocumentsDirectories()
 		ResetView.clearWorkCache()
-		_addDefaultCertificates()
-		_configureProtectedCoreSources()
+        storeReadySubscription = Storage.shared.$isStoreLoaded.filter { $0 }.first()
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                guard let self, !self.didPrepareStorage else { return }
+                self.didPrepareStorage = true
+                self._configureProtectedCoreSources()
+                self._addDefaultCertificates()
+            }
 		return true
 	}
 	
@@ -1073,16 +1094,13 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			let request = NSFetchRequest<AltSource>(entityName: "AltSource")
 			let existingSources = (try? context.fetch(request)) ?? []
 			
-            // Preserve user-added Feather sources across XSign upgrades.
-            for source in existingSources {
-                let url = source.sourceURL?.absoluteString.lowercased() ?? ""
-                let identifier = source.identifier?.lowercased() ?? ""
-                if url.contains("apptesters") || identifier.contains("apptesters") { context.delete(source) }
+            // Remove only the retired catalog records. Certificates and imported/signed apps are separate entities.
+            for source in existingSources where ProtectedSourcesVault.isRetiredSource(source.sourceURL, identifier: source.identifier) {
+                context.delete(source)
             }
 
 			let coreRepos: [(name: String, id: String, url: String)] = [
-				("IPA BLACK", "xsign.core.ipablack", ProtectedSourcesVault.ipaBlackURLString),
-                ("IPA BLACK", "xsign.core.storeapi", ProtectedSourcesVault.storeAPIURLString)
+				("IPA BLACK", "xsign.core.ipablack", ProtectedSourcesVault.ipaBlackURLString)
 			]
 			
 			let updatedExisting = (try? context.fetch(request)) ?? []
@@ -1155,4 +1173,19 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 			Logger.misc.error("Failed to list signing-assets: \(error)")
 		}
 	}
+}
+
+private struct XSignStorageLoadView: View {
+    @ObservedObject var storage: Storage
+    var body: some View {
+        VStack(spacing: 16) {
+            if storage.storeLoadError != nil {
+                Image(systemName: "externaldrive.badge.exclamationmark").font(.largeTitle)
+                Text("تعذّر فتح البيانات المحفوظة").font(.headline)
+                Text("أعد المحاولة لفتح مكتبتك.").foregroundStyle(.secondary)
+                Button("إعادة المحاولة") { storage.retryLoadingStore() }
+            } else { ProgressView(); Text("جارٍ فتح مكتبتك…").foregroundStyle(.secondary) }
+        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.layoutDirection, .rightToLeft)
+    }
 }

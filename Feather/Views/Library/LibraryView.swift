@@ -20,6 +20,10 @@ struct LibraryView: View {
 	@State private var _selectedInstallAppPresenting: AnyApp?
 	@State private var _isImportingPresenting = false
 	@State private var _isDownloadingPresenting = false
+    @State private var _isAppStoreLinkPresenting = false
+    @State private var _batchApps: [any AppInfoPresentable] = []
+    @State private var _isBulkSigningPresenting = false
+    @State private var _isImportingFiles = false
 	@State private var _isSettingsPresenting = false
 	@State private var _alertDownloadString: String = ""
 	
@@ -86,6 +90,15 @@ struct LibraryView: View {
 	var body: some View {
 		NBNavigationView("التوقيع") {
 			NBListAdaptable {
+                Section {
+                    Button { _isAppStoreLinkPresenting = true } label: {
+                        Label("رابط App Store", systemImage: "link.badge.plus")
+                    }
+                    if _filteredSignedApps.isEmpty && _filteredImportedApps.isEmpty {
+                        Text("استورد ملف IPA لتعديل معلوماته وتوقيعه، أو افتح رابط التطبيق في App Store.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
 				Section {
 					Picker("العرض", selection: $_selectedScope) {
 						ForEach(Scope.allCases, id: \.displayName) { scope in
@@ -187,23 +200,6 @@ struct LibraryView: View {
 			}
 			.searchable(text: $_searchText, placement: .platform(), prompt: "بحث في التوقيع (عربي / إنجليزي)...")
 			.scrollDismissesKeyboard(.interactively)
-			.overlay {
-				if _filteredSignedApps.isEmpty && _filteredImportedApps.isEmpty {
-					if #available(iOS 17, *) {
-						ContentUnavailableView {
-							Label("لا توجد تطبيقات", systemImage: "arcade.stick.console.fill")
-						} description: {
-							Text("استورد ملف IPA ليتم قراءة Info.plist وتوقيعه لحظياً.")
-						} actions: {
-							Button("استيراد وتوقيع ملف IPA") {
-								_isImportingPresenting = true
-							}
-							.buttonStyle(.borderedProminent)
-							.clipShape(Capsule())
-						}
-					}
-				}
-			}
 			.toolbar {
 				ToolbarItem(placement: .topBarLeading) {
 					EditButton()
@@ -211,6 +207,12 @@ struct LibraryView: View {
 				
 				ToolbarItemGroup(placement: .topBarTrailing) {
 					if _editMode.isEditing {
+                        Button {
+                            _batchApps = _allSelectedApps
+                            _isBulkSigningPresenting = true
+                        } label: { Image(systemName: "signature") }
+                        .accessibilityLabel("توقيع التطبيقات المحددة")
+                        .disabled(_allSelectedApps.isEmpty || _isImportingFiles)
 						Button(role: .destructive) {
 							_bulkDeleteSelectedApps()
 						} label: {
@@ -219,9 +221,12 @@ struct LibraryView: View {
 						.disabled(_selectedAppUUIDs.isEmpty)
 					} else {
 						Menu {
-							Button("استيراد وتوقيع لحظي من الملفات", systemImage: "bolt.doc.fill") {
+							Button("استيراد ملفات IPA", systemImage: "arrow.down.doc") {
 								_isImportingPresenting = true
 							}
+                            Button("رابط App Store", systemImage: "link.badge.plus") {
+                                _isAppStoreLinkPresenting = true
+                            }
 							Button("استيراد وتوقيع من رابط مباشر", systemImage: "link") {
 								_isDownloadingPresenting = true
 							}
@@ -237,6 +242,9 @@ struct LibraryView: View {
 				}
 			}
 			.environment(\.editMode, $_editMode)
+            .sheet(isPresented: $_isBulkSigningPresenting, onDismiss: { _batchApps = []; AutoSignPipelineManager.shared.presentNextReadyApp() }) {
+                XSignBulkSigningView(apps: _batchApps)
+            }
 			.sheet(item: $_selectedInfoAppPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) { app in
 				LibraryInfoView(app: app.base)
 			}
@@ -259,6 +267,9 @@ struct LibraryView: View {
 				)
 				.ignoresSafeArea()
 			}
+            .sheet(isPresented: $_isAppStoreLinkPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) {
+                XSignAppStoreLinkView()
+            }
 			.sheet(isPresented: $_isSettingsPresenting, onDismiss: { AutoSignPipelineManager.shared.presentNextReadyApp() }) {
 				AppStore2026SettingsPopup(sources: _sources, viewModel: sourcesViewModel)
 			}
@@ -289,36 +300,46 @@ struct LibraryView: View {
 	}
 	
 	// MARK: - Direct Native Importer + Instant Auto-Sign
-	private func _instantImportAndAutoSign(urls: [URL]) {
-		guard let firstURL = urls.first else { return }
-		_oneClickStatusMessage = "استيراد وقراءة سريعة لـ Info.plist..."
-		
-		let existingUUIDs = Set(AutoSignPipelineManager.fetchImportedApps().compactMap { $0.uuid })
-		let hasAccess = firstURL.startAccessingSecurityScopedResource()
-		
-		FR.handlePackageFile(firstURL) { error in
-			if hasAccess {
-				firstURL.stopAccessingSecurityScopedResource()
-			}
-			DispatchQueue.main.async {
-				if error != nil {
-					_oneClickStatusMessage = nil
-					return
-				}
-				let updatedImported = AutoSignPipelineManager.fetchImportedApps()
-				if let newlyImported = updatedImported.first(where: { item in
-					guard let uuid = item.uuid else { return false }
-					return !existingUUIDs.contains(uuid)
-				}) ?? updatedImported.first {
-					AutoSignPipelineManager.prewarmAndNormalizePayload(for: newlyImported)
-					_ultraFastSign(app: newlyImported)
-				} else {
-					_oneClickStatusMessage = nil
-				}
-			}
-		}
-	}
-	
+    private var _allSelectedApps: [any AppInfoPresentable] {
+        let imported: [any AppInfoPresentable] = Array(_importedApps)
+        let signed: [any AppInfoPresentable] = Array(_signedApps)
+        let apps = imported + signed
+        return apps.filter { _selectedAppUUIDs.contains($0.uuid ?? "") }
+    }
+
+    private func _instantImportAndAutoSign(urls: [URL]) {
+        guard !urls.isEmpty, !_isImportingFiles else { return }
+        _isImportingFiles = true
+        Task { @MainActor in
+            var imported: [any AppInfoPresentable] = []
+            var failures: [String] = []
+            defer { _isImportingFiles = false }
+            for (index, url) in urls.enumerated() {
+                _oneClickStatusMessage = "استيراد \(index + 1) من \(urls.count)…"
+                let hasAccess = url.startAccessingSecurityScopedResource()
+                let result: Result<String, Error> = await withCheckedContinuation { continuation in
+                    FR.importPackageFile(url) { continuation.resume(returning: $0) }
+                }
+                if hasAccess { url.stopAccessingSecurityScopedResource() }
+                switch result {
+                case .success(let uuid):
+                    if let app = AutoSignPipelineManager.fetchImportedApps().first(where: { $0.uuid == uuid }) {
+                        imported.append(app)
+                    } else { failures.append(url.lastPathComponent + ": تعذّر العثور على التطبيق المستورد.") }
+                case .failure(let error): failures.append(url.lastPathComponent + ": " + error.localizedDescription)
+                }
+            }
+            _oneClickStatusMessage = nil
+            let presentResult = {
+                if urls.count == 1, let app = imported.first { _ultraFastSign(app: app) }
+                else if !imported.isEmpty { _batchApps = imported; _isBulkSigningPresenting = true }
+            }
+            if !failures.isEmpty {
+                UIAlertController.showAlertWithOk(title: "تعذّر استيراد بعض الملفات", message: failures.prefix(5).joined(separator: "\n"), action: presentResult)
+            } else { presentResult() }
+        }
+    }
+
 	// MARK: - Ultra-Fast Instant Signing via ZSign
 	private func _ultraFastSign(app: AppInfoPresentable) {
 		let selectedCertIndex = UserDefaults.standard.integer(forKey: "feather.selectedCert")
@@ -345,25 +366,26 @@ struct LibraryView: View {
 		
 		let options = OptionsManager.shared.options
 		
-		FR.signPackageFile(
+		FR.signPackageFileWithResult(
 			app,
 			using: options,
 			icon: nil,
 			certificate: cert
-		) { error in
+		) { result in
 			DispatchQueue.main.async {
 				_signingInProgressUUIDs.remove(uuid)
 				_oneClickStatusMessage = nil
 				
-				if let error {
+                switch result {
+                case .failure(let error):
 					UINotificationFeedbackGenerator().notificationOccurred(.error)
 					UIAlertController.showAlertWithOk(
 						title: "فشل التوقيع",
 						message: error.localizedDescription
 					)
-				} else {
+                case .success(let uuid):
 					UINotificationFeedbackGenerator().notificationOccurred(.success)
-					if let newlySigned = AutoSignPipelineManager.fetchSignedApps().first ?? _signedApps.first {
+					if let newlySigned = AutoSignPipelineManager.fetchSignedApps().first(where: { $0.uuid == uuid }) {
 						_selectedInstallAppPresenting = AnyApp(base: newlySigned)
 					}
 				}
@@ -371,20 +393,11 @@ struct LibraryView: View {
 		}
 	}
 	
-	private func _bulkDeleteSelectedApps() {
-		var allApps: [AppInfoPresentable] = []
-		if _selectedScope == .all || _selectedScope == .signed {
-			allApps.append(contentsOf: _filteredSignedApps)
-		}
-		if _selectedScope == .all || _selectedScope == .imported {
-			allApps.append(contentsOf: _filteredImportedApps)
-		}
-		for app in allApps where _selectedAppUUIDs.contains(app.uuid ?? "") {
-			Storage.shared.deleteApp(for: app)
-		}
-		_selectedAppUUIDs.removeAll()
-	}
-	
+    private func _bulkDeleteSelectedApps() {
+        for app in _allSelectedApps { Storage.shared.deleteApp(for: app) }
+        _selectedAppUUIDs.removeAll()
+    }
+
 	enum Scope: CaseIterable {
 		case all
 		case imported
